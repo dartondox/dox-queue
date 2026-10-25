@@ -1,0 +1,7 @@
+# like .gitignore, plus the docs page (it goes to the Dox docs site)
+.dart_tool/
+.DS_Store
+pubspec.lock
+pubspec_overrides.yaml
+build/
+docs/
