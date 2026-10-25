@@ -44,8 +44,8 @@ Future<String> _generate(Map<String, String> app) async {
     rootPackage: 'a',
     outputs: <String, Object>{
       // the test copy of dox_queue gets one too
-      'dox_queue|lib/jobs.g.dart': anything,
-      'a|lib/jobs.g.dart': decodedMatches(
+      'dox_queue|lib/generated/jobs.g.dart': anything,
+      'a|lib/generated/jobs.g.dart': decodedMatches(
         predicate<String>((String s) {
           output = s;
           return true;

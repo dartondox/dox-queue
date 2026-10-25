@@ -3,7 +3,7 @@ import 'dart:async';
 import 'queue.dart';
 
 /// Marks a background job. `dart run build_runner build` finds every
-/// `@Job()` class in `lib/` and writes `lib/jobs.g.dart`.
+/// `@Job()` class in `lib/` and writes `lib/generated/jobs.g.dart`.
 ///
 /// [name] is the name saved with each queued job. Default: the class
 /// name. Set it when you rename the class while jobs of the old name
