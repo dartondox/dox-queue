@@ -1,3 +1,7 @@
+## 3.0.0-alpha.2
+
+- The builder now writes the job registry to `lib/generated/jobs.g.dart`. Import it from there.
+
 ## 3.0.0-alpha.1
 
 - First version.

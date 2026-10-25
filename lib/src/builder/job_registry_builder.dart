@@ -24,9 +24,9 @@ class JobEntry {
   String get className => element.displayName;
 }
 
-/// Writes `lib/jobs.g.dart`: a `jobRegistry` with every `@Job()` class
-/// of the app, and the code to save and load each one. Give it to the
-/// app: `QueueConfig(jobs: jobRegistry)`.
+/// Writes `lib/generated/jobs.g.dart`: a `jobRegistry` with every
+/// `@Job()` class of the app, and the code to save and load each one.
+/// Give it to the app: `QueueConfig(jobs: jobRegistry)`.
 ///
 /// The parameters of the unnamed constructor are saved. Each one needs
 /// a field or getter of the same name, and a JSON type. The build stops
@@ -34,12 +34,12 @@ class JobEntry {
 class JobRegistryBuilder implements Builder {
   const JobRegistryBuilder();
 
-  static const String output = 'lib/jobs.g.dart';
+  static const String output = 'lib/generated/jobs.g.dart';
 
   @override
   Map<String, List<String>> get buildExtensions {
     return const <String, List<String>>{
-      r'$lib$': <String>['jobs.g.dart'],
+      r'$lib$': <String>['generated/jobs.g.dart'],
     };
   }
 
@@ -210,7 +210,7 @@ class JobRegistryBuilder implements Builder {
   }
 }
 
-/// Writes the code of `lib/jobs.g.dart`.
+/// Writes the code of `lib/generated/jobs.g.dart`.
 class JobRegistryWriter {
   JobRegistryWriter(this.entries);
 

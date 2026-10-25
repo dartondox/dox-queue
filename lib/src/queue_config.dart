@@ -33,7 +33,7 @@ class QueueConfig {
   /// - `database`: jobs are in the `jobs` table (see `QueueTables`).
   final String driver;
 
-  /// every job class: `jobRegistry` from `lib/jobs.g.dart`
+  /// every job class: `jobRegistry` from `lib/generated/jobs.g.dart`
   final JobRegistry jobs;
 
   /// the Redis server, for the `redis` driver. Null: localhost:6379.

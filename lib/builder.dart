@@ -7,7 +7,7 @@ import 'src/builder/job_registry_builder.dart';
 
 export 'src/builder/job_registry_builder.dart';
 
-/// Writes `lib/jobs.g.dart` with every `@Job()` class of the app.
+/// Writes `lib/generated/jobs.g.dart` with every `@Job()` class of the app.
 Builder buildJobRegistry(BuilderOptions options) {
   return const JobRegistryBuilder();
 }

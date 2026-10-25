@@ -6,7 +6,7 @@ typedef JobEncoder = Map<String, Object?> Function(DoxJob job);
 /// Makes a job again from the map of [JobEncoder].
 typedef JobDecoder = DoxJob Function(Map<String, Object?> data);
 
-/// How to save and load one job class. `lib/jobs.g.dart` makes them.
+/// How to save and load one job class. `lib/generated/jobs.g.dart` makes them.
 class JobCodec {
   const JobCodec(this.name, this.type, this.encode, this.decode);
 
@@ -17,7 +17,7 @@ class JobCodec {
   final JobDecoder decode;
 }
 
-/// Every job class of the app: `jobRegistry` from `lib/jobs.g.dart`.
+/// Every job class of the app: `jobRegistry` from `lib/generated/jobs.g.dart`.
 /// Give it to `QueueConfig(jobs: jobRegistry)`.
 class JobRegistry {
   const JobRegistry(this.codecs);
@@ -49,7 +49,7 @@ class JobRegistry {
       throw StateError(
         '${job.runtimeType} is not in the job registry. Put @Job() above '
         'the class, run `dart run build_runner build`, and set '
-        '`QueueConfig(jobs: jobRegistry)` from lib/jobs.g.dart.',
+        '`QueueConfig(jobs: jobRegistry)` from lib/generated/jobs.g.dart.',
       );
     }
     return codec;
