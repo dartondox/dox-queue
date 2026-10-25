@@ -1,0 +1,9 @@
+builders:
+  # lib/jobs.g.dart: every @Job class of the app, for
+  # QueueConfig(jobs: jobRegistry)
+  jobs:
+    import: "package:dox_queue/builder.dart"
+    builder_factories: ["buildJobRegistry"]
+    build_extensions: { "$lib$": ["jobs.g.dart"] }
+    auto_apply: dependents
+    build_to: source
