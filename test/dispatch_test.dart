@@ -25,7 +25,7 @@ AppConfig _app(QueueConfig config) {
     appKey: 'k' * 32,
     totalIsolate: 1,
     routers: <Router>[WelcomeRouter()],
-    services: <DoxService>[QueueService(config)],
+    providers: <DoxProvider>[QueueProvider(config)],
   );
 }
 

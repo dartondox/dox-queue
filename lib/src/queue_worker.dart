@@ -14,7 +14,7 @@ import 'worker.dart';
 ///   exitCode = await QueueWorker(app: appConfig).run(args);
 /// }
 /// ```
-/// It starts the app services (database, cache, queue), but not the
+/// It starts the app providers (database, cache, queue), but not the
 /// http server. Then it runs one command:
 /// - `work` (default): run jobs. Flags: `--queue=a,b`,
 ///   `--concurrency=N`, `--once`, `--tries=N`, `--timeout=SECONDS`,
@@ -32,7 +32,7 @@ class QueueWorker {
 
   final AppConfig app;
 
-  /// true while a [QueueWorker] runs in this process. `QueueService`
+  /// true while a [QueueWorker] runs in this process. `QueueProvider`
   /// then does not start the in-process worker.
   static bool active = false;
 
@@ -67,17 +67,17 @@ Flags of work:
     }
     active = true;
     Dox().initialize(app);
-    List<DoxService> services = _services();
+    List<DoxProvider> providers = _providers();
     try {
-      for (DoxService service in services) {
-        await service.setup();
+      for (DoxProvider provider in providers) {
+        await provider.setup();
       }
       return await _run(command);
     } catch (error) {
       stderr.writeln('Queue: $error');
       return 1;
     } finally {
-      await _shutdown(services);
+      await _shutdown(providers);
       active = false;
     }
   }
@@ -174,29 +174,28 @@ Flags of work:
     }
   }
 
-  /// the services of the app config, then the ones of the container,
+  /// the providers of the app config, then the ones of the container,
   /// like the web server
-  List<DoxService> _services() {
-    List<DoxService> services = List<DoxService>.of(app.services);
+  List<DoxProvider> _providers() {
+    List<DoxProvider> providers = List<DoxProvider>.of(app.providers);
     Set<Type> listed = <Type>{};
-    for (DoxService service in services) {
-      listed.add(service.runtimeType);
-      Dox().ioc.adopt(service);
+    for (DoxProvider provider in providers) {
+      listed.add(provider.runtimeType);
+      Dox().ioc.adopt(provider);
     }
-    for (DoxService service in Dox().ioc.services) {
-      if (listed.add(service.runtimeType)) services.add(service);
+    for (DoxProvider provider in Dox().ioc.providers) {
+      if (listed.add(provider.runtimeType)) providers.add(provider);
     }
-    return services;
+    return providers;
   }
 
-  /// close what the services opened, so the process can end
-  Future<void> _shutdown(List<DoxService> services) async {
-    for (DoxService service in services) {
-      if (service is! DoxShutdown) continue;
+  /// close what the providers opened, so the process can end
+  Future<void> _shutdown(List<DoxProvider> providers) async {
+    for (DoxProvider provider in providers) {
       try {
-        await (service as DoxShutdown).shutdown();
+        await provider.shutdown();
       } catch (error) {
-        stderr.writeln('Queue: shutdown of ${service.runtimeType}: $error');
+        stderr.writeln('Queue: shutdown of ${provider.runtimeType}: $error');
       }
     }
     await Queue.close();

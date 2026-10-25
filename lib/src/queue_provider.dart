@@ -10,14 +10,14 @@ import 'worker.dart';
 /// Sets up the queue in every isolate. Extend it in `lib/` so the
 /// generated container (`lib/container.g.dart`) finds it:
 /// ```
-/// class AppQueueService extends QueueService {
-///   AppQueueService() : super(queueConfig);
+/// class AppQueueProvider extends QueueProvider {
+///   AppQueueProvider() : super(queueConfig);
 /// }
 /// ```
 /// With `QueueConfig(workInProcess: true)` it also runs a worker in the
 /// first isolate of the web server.
-class QueueService implements DoxService, DoxShutdown {
-  QueueService(this.config);
+class QueueProvider extends DoxProvider {
+  QueueProvider(this.config);
 
   final QueueConfig config;
 

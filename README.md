@@ -58,21 +58,21 @@ QueueConfig queueConfig = QueueConfig(
 > `retryAfter` is how Dox finds the job of a crashed worker.
 > A job that runs longer than `retryAfter` looks crashed, so a second worker runs it again.
 
-### 2. Service
+### 2. Provider
 
-The service sets up the queue in every isolate. Put it in `lib/` so the generated container finds it.
+The provider sets up the queue in every isolate. Put it in `lib/` so the generated container finds it.
 
-`lib/services/queue_service.dart`:
+`lib/providers/queue_provider.dart`:
 
 ```dart
 import 'package:dox_queue/dox_queue.dart';
 
 import '../config/queue.dart';
 
-/// Sets up the queue. Dox finds every DoxService class,
+/// Sets up the queue. Dox finds every DoxProvider class,
 /// see lib/container.g.dart.
-class AppQueueService extends QueueService {
-  AppQueueService() : super(queueConfig);
+class AppQueueProvider extends QueueProvider {
+  AppQueueProvider() : super(queueConfig);
 }
 ```
 
@@ -93,7 +93,7 @@ Future<void> main(List<String> args) async {
 }
 ```
 
-The worker starts the services of your app (database, cache, queue). It does not start the HTTP server.
+The worker starts the providers of your app (database, cache, queue). It does not start the HTTP server.
 
 ### 4. Tables (database driver only)
 
