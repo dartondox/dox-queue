@@ -1,3 +1,7 @@
+## 3.0.0-alpha.3
+
+- A job with no fields no longer gives an "unused variable" warning in `lib/generated/jobs.g.dart`.
+
 ## 3.0.0-alpha.2
 
 - The builder now writes the job registry to `lib/generated/jobs.g.dart`. Import it from there.

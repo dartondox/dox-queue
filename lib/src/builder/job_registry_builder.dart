@@ -252,9 +252,13 @@ class JobRegistryWriter {
   void _writeEncode(StringBuffer out, JobEntry entry, String type, int i) {
     out
       ..writeln()
-      ..writeln('Map<String, Object?> _encode$i(DoxJob job) {')
-      ..writeln('$type value = job as $type;')
-      ..writeln('return <String, Object?>{');
+      ..writeln('Map<String, Object?> _encode$i(DoxJob job) {');
+    // a job with no fields has no value to read, and an unused variable
+    // is a warning in the app
+    if (entry.params.isNotEmpty) {
+      out.writeln('$type value = job as $type;');
+    }
+    out.writeln('return <String, Object?>{');
     for (FormalParameterElement param in entry.params) {
       String name = param.displayName;
       out.writeln("'$name': value.$name,");

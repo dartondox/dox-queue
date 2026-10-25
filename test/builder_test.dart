@@ -95,6 +95,22 @@ void main() {
     expect(output, isNot(contains('JobCodec(')));
   });
 
+  test('a job with no fields has no unused variable', () async {
+    String output = await _generate(<String, String>{
+      'a|lib/jobs.dart':
+          '''
+$_header
+@Job()
+class A extends DoxJob {
+  @override
+  Future<void> handle() async {}
+}
+''',
+    });
+    expect(output, contains("JobCodec('A'"));
+    expect(output, isNot(contains('value = job')));
+  });
+
   test('a job class must extend DoxJob', () async {
     String error = await _error('''
 $_header
