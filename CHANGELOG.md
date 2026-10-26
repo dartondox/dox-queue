@@ -1,3 +1,7 @@
+## 3.0.0-alpha.4
+
+- `QueueProvider` (was a DoxService): extend it in your app, `shutdown()` is optional.
+
 ## 3.0.0-alpha.3
 
 - A job with no fields no longer gives an "unused variable" warning in `lib/generated/jobs.g.dart`.

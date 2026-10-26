@@ -5,7 +5,7 @@ import 'job_registry.dart';
 import 'queue_config.dart';
 import 'queue_driver.dart';
 
-/// Puts jobs on the queue. `QueueService` sets it up in every isolate.
+/// Puts jobs on the queue. `QueueProvider` sets it up in every isolate.
 /// ```
 /// await Queue.dispatch(SendWelcomeEmail(userId: 1));
 /// await Queue.dispatch(
@@ -18,7 +18,7 @@ class Queue {
   static QueueConfig? _config;
   static QueueDriver? _driver;
 
-  /// Use [config] in this isolate. `QueueService` calls it. Call it in
+  /// Use [config] in this isolate. `QueueProvider` calls it. Call it in
   /// tests, eg. with the `sync` driver.
   static void configure(QueueConfig config) {
     _config = config;
@@ -30,7 +30,7 @@ class Queue {
     QueueConfig? config = _config;
     if (config == null) {
       throw StateError(
-        'The queue is not set up. Add a class that extends QueueService '
+        'The queue is not set up. Add a class that extends QueueProvider '
         'in lib/ (see the dox_queue README), or call Queue.configure().',
       );
     }

@@ -13,16 +13,16 @@ Future<void> main(List<String> args) async {
     appKey: 'k' * 32,
     totalIsolate: 1,
     logger: const LoggerConfig(enabled: true),
-    services: <DoxService>[
-      FileDatabaseService(args.first),
-      QueueService(QueueConfig(driver: 'database', jobs: jobRegistry)),
+    providers: <DoxProvider>[
+      FileDatabaseProvider(args.first),
+      QueueProvider(QueueConfig(driver: 'database', jobs: jobRegistry)),
     ],
   );
   exitCode = await QueueWorker(app: app).run(args.skip(1).toList());
 }
 
-class FileDatabaseService implements DoxService {
-  FileDatabaseService(this.path);
+class FileDatabaseProvider extends DoxProvider {
+  FileDatabaseProvider(this.path);
 
   final String path;
 
