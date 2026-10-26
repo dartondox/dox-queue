@@ -1,3 +1,7 @@
+## 3.0.0
+
+- The first stable release.
+
 ## 3.0.0-rc.1
 
 - Uses the `Logger` that `dox_core` now exports, so it needs dox_core 3.0.0-rc.1.
