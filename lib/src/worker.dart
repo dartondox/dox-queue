@@ -1,11 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:dox_core/utils/logger.dart';
-
 import 'job.dart';
 import 'job_registry.dart';
 import 'queue_driver.dart';
+import 'queue_log.dart';
 
 /// Settings of a [Worker]. The flags of `bin/queue.dart work` set them.
 class WorkerOptions {
@@ -81,7 +80,7 @@ class Worker {
       try {
         job = await _next();
       } catch (error, stack) {
-        Logger.danger('Queue: can not take a job: $error', '$stack');
+        QueueLog.danger('Queue: can not take a job: $error', '$stack');
         await _pause(options.sleep);
         continue;
       }
@@ -93,7 +92,7 @@ class Worker {
       try {
         await process(job);
       } catch (error, stack) {
-        Logger.danger('Queue: ${job.payload.job} error: $error', '$stack');
+        QueueLog.danger('Queue: ${job.payload.job} error: $error', '$stack');
       }
       if (options.once) return;
     }
@@ -124,7 +123,7 @@ class Worker {
       job = _decode(payload);
     } catch (error, stack) {
       // no retry: the job can not be read, a retry gives the same error
-      Logger.danger('Queue: failed $label: $error');
+      QueueLog.danger('Queue: failed $label: $error');
       await driver.fail(reserved, '$error\n$stack');
       return;
     }
@@ -141,7 +140,7 @@ class Worker {
     }
     Duration timeout = job.timeout ?? options.timeout;
     Stopwatch watch = Stopwatch()..start();
-    Logger.info('Queue: running $label');
+    QueueLog.info('Queue: running $label');
     try {
       await job.handle().timeout(timeout);
     } catch (error, stack) {
@@ -153,7 +152,7 @@ class Worker {
         return;
       }
       Duration wait = backoffFor(job, reserved.attempts);
-      Logger.warn(
+      QueueLog.warn(
         'Queue: $label failed try ${reserved.attempts} of $tries, '
         'next try in $wait: $reason',
       );
@@ -161,7 +160,7 @@ class Worker {
       return;
     }
     await driver.delete(reserved);
-    Logger.success('Queue: done $label in ${watch.elapsedMilliseconds}ms');
+    QueueLog.success('Queue: done $label in ${watch.elapsedMilliseconds}ms');
   }
 
   /// the wait before the next try, after try number [attempts]
@@ -190,12 +189,12 @@ class Worker {
     Object error,
     StackTrace stack,
   ) async {
-    Logger.danger('Queue: failed $label: $error');
+    QueueLog.danger('Queue: failed $label: $error');
     await driver.fail(reserved, '$error\n$stack');
     try {
       await job.failed(error, stack);
     } catch (hookError, hookStack) {
-      Logger.danger(
+      QueueLog.danger(
         'Queue: failed() of $label threw: $hookError',
         '$hookStack',
       );
