@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:dox_core/dox_core.dart';
-import 'package:dox_core/utils/logger.dart';
 
 import 'queue.dart';
 import 'queue_driver.dart';

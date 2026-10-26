@@ -1,7 +1,6 @@
 import 'dart:io';
 
 import 'package:dox_core/dox_core.dart';
-import 'package:dox_core/utils/logger.dart';
 
 /// Logs of the queue worker.
 ///
