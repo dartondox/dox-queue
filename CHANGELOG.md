@@ -1,5 +1,6 @@
-## Unreleased
+## 3.0.0-rc.1
 
+- Uses the `Logger` that `dox_core` now exports, so it needs dox_core 3.0.0-rc.1.
 - Fix: a `Worker` started without `Dox().initialize()` crashed with a `LateInitializationError` when it logged. Now it logs to stdout, and errors to stderr.
 
 ## 3.0.0-alpha.5
