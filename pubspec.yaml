@@ -14,7 +14,7 @@ dependencies:
   dox_core: ^3.0.0-alpha.15
   dox_orm: ^3.0.0-alpha.9
   glob: ^2.2.0
-  ioredis: ^3.0.0
+  ioredis: '>=2.0.0-alpha.3 <4.0.0'
 
 dev_dependencies:
   build_test: ^3.5.23
