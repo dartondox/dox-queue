@@ -1,3 +1,7 @@
+## Unreleased
+
+- Fix: a `Worker` started without `Dox().initialize()` crashed with a `LateInitializationError` when it logged. Now it logs to stdout, and errors to stderr.
+
 ## 3.0.0-alpha.5
 
 - Works with ioredis 3.0.0, so it works with dox_core 3.0.0-alpha.16 and newer.
