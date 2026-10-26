@@ -1,3 +1,7 @@
+## 3.0.0-alpha.5
+
+- Works with ioredis 3.0.0, so it works with dox_core 3.0.0-alpha.16 and newer.
+
 ## 3.0.0-alpha.4
 
 - `QueueProvider` (was a DoxService): extend it in your app, `shutdown()` is optional.
