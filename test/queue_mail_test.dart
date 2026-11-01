@@ -7,6 +7,19 @@ import 'support.dart';
 late ArrayTransport mainMailer;
 late ArrayTransport otherMailer;
 
+/// a mail server that is down
+class BrokenTransport extends Transport {
+  int calls = 0;
+
+  @override
+  Future<SentMessage> send(Message message) async {
+    calls++;
+    throw MailException('server is down');
+  }
+}
+
+late BrokenTransport brokenMailer;
+
 Message _message() => Message(
   to: <Address>[const Address('ann@example.com', 'Ann')],
   bcc: <Address>[const Address('boss@example.com')],
@@ -20,12 +33,13 @@ Message _message() => Message(
 
 /// take one job of [queue] and run it with an app registry that has no
 /// mail job, like a real app
-Future<JobPayload> _work([String queue = 'default']) async {
+Future<JobPayload> _work([String queue = 'default', int tries = 1]) async {
   ReservedJob? job = await Queue.driver.pop(queue);
   expect(job, isNotNull, reason: 'no job on $queue');
   await Worker(
     driver: Queue.driver,
     jobs: const JobRegistry(<JobCodec>[]),
+    options: WorkerOptions(tries: tries),
   ).process(job!);
   return job.payload;
 }
@@ -37,11 +51,16 @@ void main() {
     Mail.restore();
     mainMailer = ArrayTransport();
     otherMailer = ArrayTransport();
+    brokenMailer = BrokenTransport();
     Mail.configure(
       MailConfig(
         defaultMailer: 'main',
         from: const Address('app@example.com', 'App'),
-        mailers: <String, Transport>{'main': mainMailer, 'other': otherMailer},
+        mailers: <String, Transport>{
+          'main': mainMailer,
+          'other': otherMailer,
+          'broken': brokenMailer,
+        },
       ),
     );
   });
@@ -91,11 +110,26 @@ void main() {
         expect(mainMailer.sent, isEmpty);
       });
 
+      test('a failing transport is retried, then the job fails', () async {
+        await Mail.mailer('broken').queue(_message());
+        await _work('default', 2);
+        expect(brokenMailer.calls, 1);
+        expect(await Queue.driver.failed(), isEmpty);
+        await _work('default', 2);
+        expect(brokenMailer.calls, 2);
+        List<FailedJob> failed = await Queue.driver.failed();
+        expect(failed.single.job, 'dox_queue:SendQueuedMail');
+        expect(failed.single.error, contains('server is down'));
+        expect(await Queue.driver.pop('default'), isNull);
+      });
+
       test('encrypt: true saves the mail encrypted', () async {
         await Mail.queue(_message(), encrypt: true);
         JobPayload payload = await _work();
         expect(payload.job, 'dox_queue:SendEncryptedQueuedMail');
         expect(payload.data, isNot(contains('ann@example.com')));
+        expect(payload.data, isNot(contains('Your invoice')));
+        expect(payload.data, isNot(contains('Hi Ann')));
         expect(mainMailer.messages.single.subject, 'Your invoice');
       });
     });

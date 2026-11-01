@@ -100,6 +100,12 @@ class JobRegistryBuilder implements Builder {
       );
     }
     String name = job.getField('name')?.toStringValue() ?? className;
+    if (name.startsWith('dox_queue:')) {
+      throw StateError(
+        '@Job() on $where: the name "$name" starts with "dox_queue:". '
+        'That start is kept for the built-in jobs. Use another name.',
+      );
+    }
     JobEntry entry = JobEntry(element, library, name);
     for (FormalParameterElement param in constructor.formalParameters) {
       String field = param.displayName;

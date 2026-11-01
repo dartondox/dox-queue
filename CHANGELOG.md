@@ -1,7 +1,8 @@
 ## Unreleased
 
 - New: a built-in job for `Mail.queue()` and `Mail.later()` of dox_mailer. `Queue.configure()` turns it on. Apps do not add it to `lib/generated/jobs.g.dart`: every `JobRegistry` finds the built-in jobs (`JobRegistry.builtIn`) after its own jobs. With `encrypt: true`, the mail is saved like a `ShouldBeEncrypted` job.
-- Now depends on dox_mailer. It must be released before dox_queue.
+- Now depends on dox_mailer.
+- Deploy the queue worker together with the web app. An old worker does not know the new mail job, so it fails the queued emails.
 - Fix (opt-in): a job that timed out keeps running, and its retry could run at the same time. The new worker flag `--timeout-grace=SECONDS` (`WorkerOptions.timeoutGrace`) makes the worker wait for the old run before the next try. The default does not change. For the in-process worker, use `QueueConfig(workerTimeoutGrace: ...)`.
 - New opt-in `QueueConfig.redisFromEnv()`: reads the Redis server from `REDIS_URL`, or from `REDIS_HOST`, `REDIS_PORT`, `REDIS_USERNAME`, `REDIS_PASSWORD` and `REDIS_TLS`. Use it as `QueueConfig(redis: QueueConfig.redisFromEnv())`. Without it, the default is still localhost:6379.
 - Opt-in `ShouldBeEncrypted` job mixin: the job data is saved encrypted with the app key (AES-GCM of dox_core). Jobs without it are saved as before.

@@ -194,4 +194,16 @@ class B extends DoxJob {
 ''');
     expect(error, contains('Two jobs are named "same"'));
   });
+
+  test('a job name can not start with dox_queue:', () async {
+    String error = await _error('''
+$_header
+@Job(name: 'dox_queue:SendQueuedMail')
+class A extends DoxJob {
+  @override
+  Future<void> handle() async {}
+}
+''');
+    expect(error, contains('kept for the built-in jobs'));
+  });
 }
