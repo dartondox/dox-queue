@@ -1,3 +1,4 @@
+import 'package:dox_core/dox_core.dart' show Env;
 import 'package:ioredis/ioredis.dart';
 
 import 'drivers/database_queue_driver.dart';
@@ -36,7 +37,8 @@ class QueueConfig {
   /// every job class: `jobRegistry` from `lib/generated/jobs.g.dart`
   final JobRegistry jobs;
 
-  /// the Redis server, for the `redis` driver. Null: localhost:6379.
+  /// the Redis server, for the `redis` driver. Null: read from the env
+  /// with [redisFromEnv], and localhost:6379 when the env has nothing.
   final RedisOptions? redis;
 
   /// the start of every Redis key
@@ -68,7 +70,7 @@ class QueueConfig {
     switch (driver) {
       case 'redis':
         return RedisQueueDriver(
-          Redis(redis ?? RedisOptions()),
+          Redis(redis ?? redisFromEnv()),
           prefix: prefix,
           retryAfter: retryAfter,
         );
@@ -83,5 +85,72 @@ class QueueConfig {
       'driver',
       'has no queue store. Use redis or database',
     );
+  }
+
+  /// Redis options from the env, used when [redis] is null:
+  /// - `REDIS_URL`, like `rediss://user:password@host:6380/0`. `rediss`
+  ///   turns on TLS. When it is set, the keys below are not read.
+  /// - else `REDIS_HOST`, `REDIS_PORT`, `REDIS_USERNAME`,
+  ///   `REDIS_PASSWORD` and `REDIS_TLS` (true, 1, yes or on).
+  ///
+  /// A key that is not set keeps the [RedisOptions] default, so with no
+  /// keys it is `RedisOptions()`: localhost:6379, no password, no TLS.
+  /// [values] replaces the env (for tests).
+  static RedisOptions redisFromEnv([Map<String, String>? values]) {
+    String? url = _env(values, 'REDIS_URL');
+    if (url != null) return _redisFromUrl(url);
+    String? port = _env(values, 'REDIS_PORT');
+    return RedisOptions(
+      host: _env(values, 'REDIS_HOST') ?? '127.0.0.1',
+      port: port == null ? 6379 : _number('REDIS_PORT', port),
+      username: _env(values, 'REDIS_USERNAME'),
+      password: _env(values, 'REDIS_PASSWORD'),
+      secure: _isOn(_env(values, 'REDIS_TLS')),
+    );
+  }
+
+  static RedisOptions _redisFromUrl(String url) {
+    Uri uri = Uri.parse(url);
+    if (uri.scheme != 'redis' && uri.scheme != 'rediss') {
+      throw ArgumentError.value(url, 'REDIS_URL', 'must start with redis://');
+    }
+    String? username;
+    String? password;
+    if (uri.userInfo.isNotEmpty) {
+      int colon = uri.userInfo.indexOf(':');
+      String user = colon < 0 ? uri.userInfo : uri.userInfo.substring(0, colon);
+      username = user.isEmpty ? null : Uri.decodeComponent(user);
+      if (colon >= 0) {
+        password = Uri.decodeComponent(uri.userInfo.substring(colon + 1));
+      }
+    }
+    String db = uri.pathSegments.isEmpty ? '' : uri.pathSegments.first;
+    return RedisOptions(
+      host: uri.host.isEmpty ? '127.0.0.1' : uri.host,
+      port: uri.hasPort ? uri.port : 6379,
+      username: username,
+      password: password,
+      db: db.isEmpty ? 0 : _number('REDIS_URL database', db),
+      secure: uri.scheme == 'rediss',
+    );
+  }
+
+  /// a key of [values], or of the env (the real env, then `.env`).
+  /// Empty is the same as not set.
+  static String? _env(Map<String, String>? values, String key) {
+    String? value = values == null ? Env.get<String?>(key) : values[key];
+    return value == null || value.isEmpty ? null : value;
+  }
+
+  static int _number(String name, String value) {
+    int? number = int.tryParse(value);
+    if (number == null) {
+      throw ArgumentError.value(value, name, 'is not a number');
+    }
+    return number;
+  }
+
+  static bool _isOn(String? value) {
+    return <String>['true', '1', 'yes', 'on'].contains(value?.toLowerCase());
   }
 }

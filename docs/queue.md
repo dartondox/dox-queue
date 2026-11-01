@@ -42,7 +42,7 @@ QueueConfig queueConfig = QueueConfig(
 | --- | --- | --- |
 | `driver` | `sync` | `sync`, `database` or `redis` |
 | `jobs` | empty | `jobRegistry` from `lib/generated/jobs.g.dart` |
-| `redis` | localhost:6379 | `RedisOptions(host: ..., port: ..., password: ...)` for the `redis` driver |
+| `redis` | from the env, else localhost:6379 | `RedisOptions(host: ..., port: ..., password: ...)` for the `redis` driver |
 | `prefix` | `dox_queue:` | the start of every Redis key |
 | `connection` | default | the dox_orm connection name, for the `database` driver |
 | `retryAfter` | 90 seconds | when a worker does not finish a job in this time, another worker can take it |
@@ -358,6 +358,14 @@ QueueConfig queueConfig = QueueConfig(
   redis: RedisOptions(host: env.redisHost, port: 6379),
 );
 ```
+
+When you leave out `redis`, the queue reads the Redis server from the env (or `.env`):
+
+- `REDIS_URL`, like `rediss://user:password@host:6380/0`. `rediss://` turns on TLS. When it is set, the keys below are not read.
+- Else `REDIS_HOST`, `REDIS_PORT`, `REDIS_USERNAME`, `REDIS_PASSWORD` and `REDIS_TLS` (`true` turns on TLS).
+
+A key that is not set keeps its default. With no keys it is localhost:6379, as before.
+`redis: RedisOptions(...)` in the config always wins, and then the env is not read.
 
 Each queue has a list of ready jobs, a sorted set of delayed jobs and a sorted set of reserved jobs.
 A Lua script takes a job, so two workers never get the same one. Failed jobs are in the hash `dox_queue:failed`.
