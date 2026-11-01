@@ -262,6 +262,7 @@ Flags of `work`:
 | `--timeout=60` | `60` | max run time in seconds of a job that does not set `timeout` |
 | `--sleep=3` | `3` | seconds to wait when the queues are empty |
 | `--stop-when-empty` | off | stop when the queues are empty |
+| `--timeout-grace=30` | off | after a timeout, wait up to this many seconds for the old run to end before the next try |
 
 ```bash
 dart run bin/queue.dart work --queue=emails,default --concurrency=4
@@ -308,6 +309,15 @@ A timeout counts as a failed try.
     Dart can not stop a running `Future`.
     After a timeout the try counts as failed, but `handle()` keeps running in the background until it ends.
     Write jobs that are safe to run twice.
+
+So by default the next try can start while the old run still works.
+Then the job runs twice at the same time.
+To stop this, start the worker with `--timeout-grace=SECONDS` (or `WorkerOptions(timeoutGrace: ...)`).
+After a timeout, the worker then waits for the old run to end, up to that time, before it tries again or fails the job.
+The result of the old run is ignored: the try still counts as failed.
+While the worker waits, it takes no other job.
+If the old run is still going when the grace time ends, the worker logs a warning and goes on.
+Keep `retryAfter` bigger than `timeout` plus the grace time, or another worker can take the job while this one waits.
 
 When a worker crashes, its job stays reserved. After `retryAfter` another worker takes it.
 This counts as a try. When there are no tries left, the job fails with a message that the worker did not finish.

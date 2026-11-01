@@ -8,10 +8,16 @@ class JobLog {
   static List<String> failed = <String>[];
   static Map<String, int> runs = <String, int>{};
 
+  /// SlowJob runs now, and the most at once
+  static int running = 0;
+  static int mostRunning = 0;
+
   static void clear() {
     handled.clear();
     failed.clear();
     runs.clear();
+    running = 0;
+    mostRunning = 0;
   }
 }
 
@@ -121,7 +127,15 @@ class SlowJob extends DoxJob {
 
   @override
   Future<void> handle() async {
-    await Future<void>.delayed(Duration(milliseconds: millis));
+    JobLog.running++;
+    if (JobLog.running > JobLog.mostRunning) {
+      JobLog.mostRunning = JobLog.running;
+    }
+    try {
+      await Future<void>.delayed(Duration(milliseconds: millis));
+    } finally {
+      JobLog.running--;
+    }
     JobLog.handled.add('slow $key');
   }
 

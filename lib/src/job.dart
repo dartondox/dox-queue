@@ -65,7 +65,9 @@ abstract class DoxJob {
   /// The max run time of one try. Null: the worker `--timeout` value
   /// (default 60 seconds). Dart can not stop a running future, so after
   /// a timeout the try counts as failed, but [handle] keeps running in
-  /// the background until it ends.
+  /// the background until it ends. The next try can then run at the
+  /// same time. The worker `--timeout-grace` flag makes the worker wait
+  /// for the old run first.
   Duration? get timeout => null;
 
   /// The queue to put the job on. `dispatch(queue:)` wins over it.

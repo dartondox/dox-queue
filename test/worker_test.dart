@@ -97,6 +97,49 @@ void main() {
         await _wait(400);
       });
 
+      /// a SlowJob that times out on each of 2 tries
+      Future<void> workTimedOutJob(Duration? grace) async {
+        await SlowJob(key: 'g', millis: 200, timeoutMillis: 30).dispatch();
+        await Worker(
+          driver: Queue.driver,
+          jobs: jobRegistry,
+          options: WorkerOptions(
+            queues: const <String>['slow'],
+            tries: 2,
+            stopWhenEmpty: true,
+            timeoutGrace: grace,
+          ),
+        ).run();
+        // let the runs in the background end
+        await _wait(300);
+      }
+
+      test(
+        'by default the retry of a timed-out job overlaps the old run',
+        () async {
+          await workTimedOutJob(null);
+          expect(JobLog.mostRunning, 2);
+          expect(JobLog.failed, <String>['slow g: TimeoutException']);
+        },
+      );
+
+      test(
+        'timeoutGrace waits for the timed-out run before the retry',
+        () async {
+          await workTimedOutJob(const Duration(seconds: 2));
+          expect(JobLog.mostRunning, 1);
+          expect(JobLog.handled, <String>['slow g', 'slow g']);
+          expect(JobLog.failed, <String>['slow g: TimeoutException']);
+        },
+      );
+
+      test('timeoutGrace stops waiting when the grace time is over', () async {
+        Stopwatch watch = Stopwatch()..start();
+        await workTimedOutJob(const Duration(milliseconds: 20));
+        expect(JobLog.mostRunning, 2);
+        expect(watch.elapsedMilliseconds, lessThan(1000));
+      });
+
       test('a delayed job runs after its delay', () async {
         await SendWelcomeEmail(userId: 1)
             .dispatch(delay: const Duration(milliseconds: 300));

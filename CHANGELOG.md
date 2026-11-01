@@ -1,3 +1,7 @@
+## Unreleased
+
+- Fix (opt-in): a job that timed out keeps running, and its retry could run at the same time. The new worker flag `--timeout-grace=SECONDS` (`WorkerOptions.timeoutGrace`) makes the worker wait for the old run before the next try. The default does not change.
+
 ## 3.0.0
 
 - The first stable release.
