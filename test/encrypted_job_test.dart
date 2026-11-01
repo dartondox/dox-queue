@@ -1,4 +1,4 @@
-import 'package:dox_core/dox_core.dart' show DecryptException;
+import 'package:dox_core/dox_core.dart' show AppConfig, DecryptException, Dox;
 import 'package:dox_queue/dox_queue.dart';
 import 'package:test/test.dart';
 
@@ -89,5 +89,40 @@ void main() {
       () => Queue.readData(data, 'PlainJob'),
       throwsA(isA<DecryptException>()),
     );
+  });
+
+  group('key rotation', () {
+    String oldKey = 'k' * 32;
+    String newKey = 'n' * 32;
+
+    tearDown(setUpTestApp);
+
+    test('data made with an old key is read with previousKeys', () {
+      String data = Queue.encryptData('{"card":"x"}', 'ChargeCard');
+      Dox().initialize(
+        AppConfig(appKey: newKey, previousKeys: <String>[oldKey]),
+      );
+      expect(Queue.readData(data, 'ChargeCard'), '{"card":"x"}');
+    });
+
+    test('data made with another key throws DecryptException', () {
+      String data = Queue.encryptData('{"card":"x"}', 'ChargeCard');
+      Dox().initialize(AppConfig(appKey: newKey));
+      expect(
+        () => Queue.readData(data, 'ChargeCard'),
+        throwsA(isA<DecryptException>()),
+      );
+    });
+
+    test('the worker fails a job with a wrong key, with no retry', () async {
+      await ChargeCard(card: 'x').dispatch();
+      Dox().initialize(AppConfig(appKey: newKey));
+      ReservedJob? job = await Queue.driver.pop('default');
+      await Worker(driver: Queue.driver, jobs: registry).process(job!);
+      expect(charged, isEmpty);
+      List<FailedJob> failed = await Queue.driver.failed();
+      expect(failed.single.error, contains('DecryptException'));
+      expect(failed.single.error, isNot(contains('"card"')));
+    });
   });
 }

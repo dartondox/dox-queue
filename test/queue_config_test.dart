@@ -73,12 +73,28 @@ void main() {
   group('createDriver', () {
     bool realEnvHasUrl = Platform.environment.containsKey('REDIS_URL');
 
-    tearDown(() => Env().env.remove('REDIS_URL'));
+    tearDown(() {
+      Env().env.remove('REDIS_URL');
+      Env().env.remove('REDIS_HOST');
+    });
 
-    test('reads the env when redis is null', () {
-      Env().env['REDIS_URL'] = 'redis://:secret@10.0.0.9:6391';
+    test('redis null keeps localhost:6379 and does not read the env', () {
+      Env().env['REDIS_URL'] = 'http://not-redis';
+      Env().env['REDIS_HOST'] = '10.0.0.9';
       RedisQueueDriver driver =
           QueueConfig(driver: 'redis').createDriver() as RedisQueueDriver;
+      expect(driver.redis.option.host, '127.0.0.1');
+      expect(driver.redis.option.port, 6379);
+    });
+
+    test('redisFromEnv() reads the env, real env and .env', () {
+      Env().env['REDIS_URL'] = 'redis://:secret@10.0.0.9:6391';
+      RedisQueueDriver driver =
+          QueueConfig(
+                driver: 'redis',
+                redis: QueueConfig.redisFromEnv(),
+              ).createDriver()
+              as RedisQueueDriver;
       expect(driver.redis.option.host, '10.0.0.9');
       expect(driver.redis.option.port, 6391);
       expect(driver.redis.option.password, 'secret');

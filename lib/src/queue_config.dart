@@ -5,6 +5,7 @@ import 'drivers/database_queue_driver.dart';
 import 'drivers/redis_queue_driver.dart';
 import 'job_registry.dart';
 import 'queue_driver.dart';
+import 'worker.dart';
 
 /// Settings of the queue. Put it in `lib/config/queue.dart`.
 /// ```
@@ -25,6 +26,7 @@ class QueueConfig {
     this.workInProcess = false,
     this.workerQueues = const <String>['default'],
     this.workerConcurrency = 1,
+    this.workerTimeoutGrace,
   });
 
   /// `sync`, `redis` or `database`.
@@ -37,8 +39,8 @@ class QueueConfig {
   /// every job class: `jobRegistry` from `lib/generated/jobs.g.dart`
   final JobRegistry jobs;
 
-  /// the Redis server, for the `redis` driver. Null: read from the env
-  /// with [redisFromEnv], and localhost:6379 when the env has nothing.
+  /// the Redis server, for the `redis` driver. Null: localhost:6379.
+  /// To read it from the env, set it to [redisFromEnv].
   final RedisOptions? redis;
 
   /// the start of every Redis key
@@ -64,13 +66,17 @@ class QueueConfig {
   /// jobs at once in the in-process worker
   final int workerConcurrency;
 
+  /// Opt-in [WorkerOptions.timeoutGrace] of the in-process worker.
+  /// Null (the default): no wait after a timeout.
+  final Duration? workerTimeoutGrace;
+
   /// the driver of [driver]. Throws an [ArgumentError] for `sync` and
   /// unknown names.
   QueueDriver createDriver() {
     switch (driver) {
       case 'redis':
         return RedisQueueDriver(
-          Redis(redis ?? redisFromEnv()),
+          Redis(redis ?? RedisOptions()),
           prefix: prefix,
           retryAfter: retryAfter,
         );
@@ -87,7 +93,8 @@ class QueueConfig {
     );
   }
 
-  /// Redis options from the env, used when [redis] is null:
+  /// Opt-in: Redis options from the env. The queue does not call it on
+  /// its own. Use it in the config: `redis: QueueConfig.redisFromEnv()`.
   /// - `REDIS_URL`, like `rediss://user:password@host:6380/0`. `rediss`
   ///   turns on TLS. When it is set, the keys below are not read.
   /// - else `REDIS_HOST`, `REDIS_PORT`, `REDIS_USERNAME`,

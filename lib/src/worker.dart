@@ -48,6 +48,8 @@ class WorkerOptions {
   /// worker waits for that run to end, up to this time, before it
   /// retries or fails the job. So the retry does not run at the same
   /// time as the old run. The worker takes no other job while it waits.
+  /// Keep `timeout + timeoutGrace` below the driver `retryAfter`, or
+  /// another worker can take the job again while this one waits.
   /// Null (the default): no wait, the retry can start at once.
   final Duration? timeoutGrace;
 }

@@ -42,13 +42,14 @@ QueueConfig queueConfig = QueueConfig(
 | --- | --- | --- |
 | `driver` | `sync` | `sync`, `database` or `redis` |
 | `jobs` | empty | `jobRegistry` from `lib/generated/jobs.g.dart` |
-| `redis` | from the env, else localhost:6379 | `RedisOptions(host: ..., port: ..., password: ...)` for the `redis` driver |
+| `redis` | localhost:6379 | `RedisOptions(host: ..., port: ..., password: ...)` for the `redis` driver |
 | `prefix` | `dox_queue:` | the start of every Redis key |
 | `connection` | default | the dox_orm connection name, for the `database` driver |
 | `retryAfter` | 90 seconds | when a worker does not finish a job in this time, another worker can take it |
 | `workInProcess` | `false` | run a worker inside the web server, see [Small apps](#small-apps-a-worker-in-the-web-server) |
 | `workerQueues` | `['default']` | the queues of the in-process worker |
 | `workerConcurrency` | `1` | jobs at once in the in-process worker |
+| `workerTimeoutGrace` | off | opt-in: after a timeout, the in-process worker waits up to this long for the old run (see Retries) |
 
 !!! warning "Keep `retryAfter` bigger than your longest job"
     `retryAfter` is how Dox finds the job of a crashed worker.
@@ -329,12 +330,12 @@ A timeout counts as a failed try.
 
 So by default the next try can start while the old run still works.
 Then the job runs twice at the same time.
-To stop this, start the worker with `--timeout-grace=SECONDS` (or `WorkerOptions(timeoutGrace: ...)`).
+To stop this, start the worker with `--timeout-grace=SECONDS` (or `WorkerOptions(timeoutGrace: ...)`, or `QueueConfig(workerTimeoutGrace: ...)` for the in-process worker).
 After a timeout, the worker then waits for the old run to end, up to that time, before it tries again or fails the job.
 The result of the old run is ignored: the try still counts as failed.
 While the worker waits, it takes no other job.
 If the old run is still going when the grace time ends, the worker logs a warning and goes on.
-Keep `retryAfter` bigger than `timeout` plus the grace time, or another worker can take the job while this one waits.
+Keep `timeout` plus the grace time below `retryAfter`, or another worker can take the job again while this one waits. Then the double run still happens.
 
 When a worker crashes, its job stays reserved. After `retryAfter` another worker takes it.
 This counts as a try. When there are no tries left, the job fails with a message that the worker did not finish.
@@ -376,13 +377,23 @@ QueueConfig queueConfig = QueueConfig(
 );
 ```
 
-When you leave out `redis`, the queue reads the Redis server from the env (or `.env`):
+To read the Redis server from the env (or `.env`), use `QueueConfig.redisFromEnv()`:
+
+```dart
+QueueConfig queueConfig = QueueConfig(
+  driver: 'redis',
+  jobs: jobRegistry,
+  redis: QueueConfig.redisFromEnv(),
+);
+```
+
+It reads:
 
 - `REDIS_URL`, like `rediss://user:password@host:6380/0`. `rediss://` turns on TLS. When it is set, the keys below are not read.
 - Else `REDIS_HOST`, `REDIS_PORT`, `REDIS_USERNAME`, `REDIS_PASSWORD` and `REDIS_TLS` (`true` turns on TLS).
 
-A key that is not set keeps its default. With no keys it is localhost:6379, as before.
-`redis: RedisOptions(...)` in the config always wins, and then the env is not read.
+A key that is not set keeps its default. With no keys it is localhost:6379.
+It is opt-in: when you leave out `redis`, the queue uses localhost:6379 and does not read the env.
 
 Each queue has a list of ready jobs, a sorted set of delayed jobs and a sorted set of reserved jobs.
 A Lua script takes a job, so two workers never get the same one. Failed jobs are in the hash `dox_queue:failed`.
