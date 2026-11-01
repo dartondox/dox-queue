@@ -36,6 +36,17 @@ class RejectTransport extends Transport {
   }
 }
 
+/// a mail server that quotes the whole body in its answer
+class QuoteTransport extends Transport {
+  @override
+  Future<SentMessage> send(Message message) async {
+    throw MailException(
+      '552 message refused: ${message.html}',
+      statusCode: 552,
+    );
+  }
+}
+
 /// every line the worker logs while [body] runs
 Future<String> _logOf(Future<void> Function() body) async {
   StringBuffer log = StringBuffer();
@@ -106,6 +117,7 @@ void main() {
           'other': otherMailer,
           'broken': brokenMailer,
           'reject': RejectTransport(),
+          'quote': QuoteTransport(),
         },
       ),
     );
@@ -184,6 +196,19 @@ void main() {
         expect(log, contains('550 5.1.1 <***>: mailbox unavailable'));
         expect(error, contains('RedactedMailError (code 550)'));
         expect(error, contains('MailException: 550 5.1.1 <***>'));
+      });
+
+      test('encrypt: true: a 100 KB body is not in the error', () async {
+        String html = '<p>Your reset code is 918273</p>${'x' * 100 * 1024}';
+        Message message = _message().copyWith(html: html);
+        await Mail.mailer('quote').queue(message, encrypt: true);
+        String log = await _logOf(_retryThenFail);
+        String error = (await Queue.driver.failed()).single.error;
+        for (String text in <String>[log, error]) {
+          expect(text, isNot(contains('918273')));
+          expect(text, isNot(contains('xxxx')));
+          expect(text, contains('(code 552): MailException: 552'));
+        }
       });
 
       test('a plain mail job keeps the full error, as before', () async {

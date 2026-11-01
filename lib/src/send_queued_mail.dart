@@ -87,20 +87,24 @@ class SendEncryptedQueuedMail extends SendQueuedMail with ShouldBeEncrypted {
 }
 
 /// The error of a mail of `Mail.queue(message, encrypt: true)` that
-/// could not be sent. Every email address, and every text of the mail
-/// (names, subject, body, headers, file names), is replaced by `***`.
-/// The type of the first error and the SMTP or HTTP code stay, to help
-/// find the problem.
+/// could not be sent, with the mail data taken out (see [redact]). The
+/// type of the first error and the SMTP or HTTP code stay, to help find
+/// the problem.
 class RedactedMailError implements Exception {
   RedactedMailError(this.type, this.message, {this.statusCode});
 
-  /// [error] with the data of [mail] (from `Message.toJson()`) taken out
+  /// [error] with the data of [mail] (from `Message.toJson()`) taken out.
+  /// When that fails, the text is only the type, never the first text.
   factory RedactedMailError.of(Object error, Map<String, Object?> mail) {
-    return RedactedMailError(
-      '${error.runtimeType}',
-      redact('$error', mail),
-      statusCode: error is MailException ? error.statusCode : null,
-    );
+    String type = '${error.runtimeType}';
+    int? code = error is MailException ? error.statusCode : null;
+    String text;
+    try {
+      text = redact('$error', mail);
+    } catch (_) {
+      text = '$type: (could not redact)';
+    }
+    return RedactedMailError(type, text, statusCode: code);
   }
 
   /// the class of the first error, eg. `MailException`
@@ -112,32 +116,80 @@ class RedactedMailError implements Exception {
   /// the SMTP reply code or the HTTP status, when there is one
   final int? statusCode;
 
-  /// any email address, also one that is not in the mail
+  /// any email address, also one that is not in the mail. The length
+  /// limits (as in the email RFC) keep it fast on a long text.
   static final RegExp _email = RegExp(
-    r'''[^\s<>()\[\]"',;:]+@[^\s<>()\[\]"',;:]+''',
+    r'''[^\s<>()\[\]"',;:@]{1,64}@[^\s<>()\[\]"',;:@]{1,255}''',
   );
 
-  /// [text] with `***` for every email address and every text of [mail].
-  /// Texts shorter than 3 letters stay, so the error can still be read.
+  static final RegExp _wordChar = RegExp(r'[\p{L}\p{N}_]', unicode: true);
+
+  /// [text] with `***` for:
+  /// - every email address,
+  /// - every whole text of [mail]: names, subject, body, header and
+  ///   metadata values, file names. Case does not count.
+  ///
+  /// A text must be a whole word in [text], so the name `Ann` does not
+  /// break `Annual`. Texts shorter than 3 letters and tags stay (tags
+  /// are labels like `smtp`, so they would hide useful words). A part of
+  /// a text, or an encoded form (JSON, MIME, URL), is not found.
   static String redact(String text, Map<String, Object?> mail) {
     List<String> secrets = <String>[];
     _collect(mail, secrets);
     secrets.sort(_longestFirst);
     String result = text;
     for (String secret in secrets) {
-      result = result.replaceAll(
-        RegExp(RegExp.escape(secret), caseSensitive: false),
-        '***',
-      );
+      // a text longer than the error can not be in it
+      if (secret.length > result.length) continue;
+      result = _hide(result, secret);
     }
     return result.replaceAll(_email, '***');
   }
 
-  /// every text in [value], but not the file bytes and content types
+  /// [text] with `***` for each whole-word [secret], found with a plain
+  /// search (a RegExp of a long body is too large for Dart)
+  static String _hide(String text, String secret) {
+    String lower = text.toLowerCase();
+    String needle = secret.toLowerCase();
+    // ponytail: rare letters change length in lower case. Then the
+    // places do not match, so work on the lower case text.
+    String source = lower.length == text.length ? text : lower;
+    bool wordStart = _isWord(needle, 0);
+    bool wordEnd = _isWord(needle, needle.length - 1);
+    StringBuffer out = StringBuffer();
+    int start = 0;
+    int search = 0;
+    while (true) {
+      int at = lower.indexOf(needle, search);
+      if (at < 0) break;
+      int end = at + needle.length;
+      if ((wordStart && _isWord(lower, at - 1)) ||
+          (wordEnd && _isWord(lower, end))) {
+        search = at + 1;
+        continue;
+      }
+      out
+        ..write(source.substring(start, at))
+        ..write('***');
+      start = end;
+      search = end;
+    }
+    out.write(source.substring(start));
+    return out.toString();
+  }
+
+  /// true when [text] has a letter, digit or `_` at [index]
+  static bool _isWord(String text, int index) {
+    if (index < 0 || index >= text.length) return false;
+    return _wordChar.hasMatch(text[index]);
+  }
+
+  /// every text in [value], but not the file bytes, content types and tags
   static void _collect(Object? value, List<String> into, [String? key]) {
-    if (key == 'bytes' || key == 'contentType') return;
+    if (key == 'bytes' || key == 'contentType' || key == 'tags') return;
     if (value is String) {
-      if (value.trim().length >= 3) into.add(value);
+      String secret = value.trim();
+      if (secret.length >= 3) into.add(secret);
     } else if (value is Map) {
       for (MapEntry<Object?, Object?> entry in value.entries) {
         _collect(entry.value, into, '${entry.key}');
