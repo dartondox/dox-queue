@@ -1,4 +1,5 @@
-import 'package:dox_mailer/dox_mailer.dart' show Mail, MailQueue, Message;
+import 'package:dox_mailer/dox_mailer.dart'
+    show Mail, MailException, MailQueue, Message;
 
 import 'job.dart';
 import 'job_registry.dart';
@@ -62,6 +63,19 @@ class SendEncryptedQueuedMail extends SendQueuedMail with ShouldBeEncrypted {
     _decode,
   );
 
+  /// Sends the mail. When the send fails, it throws a [RedactedMailError]
+  /// in place of the error. An SMTP reply or a [MailException] can name
+  /// an address, and the worker writes the error to its log and to the
+  /// failed jobs in plain text.
+  @override
+  Future<void> handle() async {
+    try {
+      await super.handle();
+    } catch (error, stack) {
+      Error.throwWithStackTrace(RedactedMailError.of(error, message), stack);
+    }
+  }
+
   static DoxJob _decode(Map<String, Object?> data) {
     return SendEncryptedQueuedMail(
       mailer: data['mailer'] as String,
@@ -69,6 +83,78 @@ class SendEncryptedQueuedMail extends SendQueuedMail with ShouldBeEncrypted {
         data['message'] as Map<Object?, Object?>,
       ),
     );
+  }
+}
+
+/// The error of a mail of `Mail.queue(message, encrypt: true)` that
+/// could not be sent. Every email address, and every text of the mail
+/// (names, subject, body, headers, file names), is replaced by `***`.
+/// The type of the first error and the SMTP or HTTP code stay, to help
+/// find the problem.
+class RedactedMailError implements Exception {
+  RedactedMailError(this.type, this.message, {this.statusCode});
+
+  /// [error] with the data of [mail] (from `Message.toJson()`) taken out
+  factory RedactedMailError.of(Object error, Map<String, Object?> mail) {
+    return RedactedMailError(
+      '${error.runtimeType}',
+      redact('$error', mail),
+      statusCode: error is MailException ? error.statusCode : null,
+    );
+  }
+
+  /// the class of the first error, eg. `MailException`
+  final String type;
+
+  /// the text of the first error, with `***` for the mail data
+  final String message;
+
+  /// the SMTP reply code or the HTTP status, when there is one
+  final int? statusCode;
+
+  /// any email address, also one that is not in the mail
+  static final RegExp _email = RegExp(
+    r'''[^\s<>()\[\]"',;:]+@[^\s<>()\[\]"',;:]+''',
+  );
+
+  /// [text] with `***` for every email address and every text of [mail].
+  /// Texts shorter than 3 letters stay, so the error can still be read.
+  static String redact(String text, Map<String, Object?> mail) {
+    List<String> secrets = <String>[];
+    _collect(mail, secrets);
+    secrets.sort(_longestFirst);
+    String result = text;
+    for (String secret in secrets) {
+      result = result.replaceAll(
+        RegExp(RegExp.escape(secret), caseSensitive: false),
+        '***',
+      );
+    }
+    return result.replaceAll(_email, '***');
+  }
+
+  /// every text in [value], but not the file bytes and content types
+  static void _collect(Object? value, List<String> into, [String? key]) {
+    if (key == 'bytes' || key == 'contentType') return;
+    if (value is String) {
+      if (value.trim().length >= 3) into.add(value);
+    } else if (value is Map) {
+      for (MapEntry<Object?, Object?> entry in value.entries) {
+        _collect(entry.value, into, '${entry.key}');
+      }
+    } else if (value is List) {
+      for (Object? item in value) {
+        _collect(item, into);
+      }
+    }
+  }
+
+  static int _longestFirst(String a, String b) => b.length - a.length;
+
+  @override
+  String toString() {
+    String code = statusCode == null ? '' : ' (code $statusCode)';
+    return 'RedactedMailError$code: $message';
   }
 }
 

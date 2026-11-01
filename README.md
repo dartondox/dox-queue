@@ -277,6 +277,8 @@ dox_queue has a built-in job for it. It is not in `lib/generated/jobs.g.dart`, a
 
 Deploy the worker together with the web app. An old worker does not know this job, so it fails the queued emails.
 
+With `encrypt: true`, a send error is logged and saved with `***` in place of every email address and every text of the mail. The error type and the SMTP code stay.
+
 ## Run the worker
 
 ```bash
