@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The Release workflow runs these tests on the tag first.
+  workflow_call:
 
 jobs:
   test:
@@ -41,6 +43,20 @@ jobs:
       - uses: dart-lang/setup-dart@v1
         with:
           sdk: stable
+      # The other Dox packages come from their newest code (main, or the
+      # branch with the same name as this PR), not pub.dev. On a tag it
+      # does nothing. See the script.
+      - run: ci/use-siblings.sh
+      # Caches the Rust dependencies of the native packages.
+      - uses: Swatinem/rust-cache@v2
+        if: github.ref_type != 'tag'
+        with:
+          workspaces: |
+            ../dox-http-native/native -> target
+            ../dox-postgres-native/native -> target
+            ../dox-mysql-native/native -> target
+      # Builds the native libraries of the clones, for this machine only.
+      - run: ci/use-siblings.sh build
       - run: dart pub get
       - run: dart format --output=none --set-exit-if-changed .
       - run: dart analyze --fatal-infos
