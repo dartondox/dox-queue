@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'job.dart';
 import 'job_registry.dart';
+import 'queue.dart';
 import 'queue_driver.dart';
 import 'queue_log.dart';
 
@@ -16,6 +17,7 @@ class WorkerOptions {
     this.timeout = const Duration(seconds: 60),
     this.sleep = const Duration(seconds: 3),
     this.stopWhenEmpty = false,
+    this.timeoutGrace,
   });
 
   /// the queues to work, first one first (`--queue=high,default`)
@@ -40,6 +42,16 @@ class WorkerOptions {
 
   /// stop when the queues are empty (`--stop-when-empty`)
   final bool stopWhenEmpty;
+
+  /// Opt-in (`--timeout-grace=SECONDS`). Dart can not stop a job that
+  /// timed out, so its `handle()` keeps running. With this set, the
+  /// worker waits for that run to end, up to this time, before it
+  /// retries or fails the job. So the retry does not run at the same
+  /// time as the old run. The worker takes no other job while it waits.
+  /// Keep `timeout + timeoutGrace` below the driver `retryAfter`, or
+  /// another worker can take the job again while this one waits.
+  /// Null (the default): no wait, the retry can start at once.
+  final Duration? timeoutGrace;
 }
 
 /// Takes jobs from the queue and runs them. A job that throws is tried
@@ -141,12 +153,16 @@ class Worker {
     Duration timeout = job.timeout ?? options.timeout;
     Stopwatch watch = Stopwatch()..start();
     QueueLog.info('Queue: running $label');
+    Future<void>? run;
     try {
-      await job.handle().timeout(timeout);
+      run = job.handle();
+      await run.timeout(timeout);
     } catch (error, stack) {
-      Object reason = error is TimeoutException
-          ? TimeoutException('$label timed out after $timeout', timeout)
-          : error;
+      Object reason = error;
+      if (error is TimeoutException) {
+        reason = TimeoutException('$label timed out after $timeout', timeout);
+        if (run != null) await _waitForTimedOutRun(run, label);
+      }
       if (reserved.attempts >= tries) {
         await _fail(reserved, job, label, reason, stack);
         return;
@@ -162,6 +178,27 @@ class Worker {
     await driver.delete(reserved);
     QueueLog.success('Queue: done $label in ${watch.elapsedMilliseconds}ms');
   }
+
+  /// With [WorkerOptions.timeoutGrace], wait until the timed-out [run]
+  /// ends, or the grace time is over. Its late result is ignored: the
+  /// try already counts as failed.
+  Future<void> _waitForTimedOutRun(Future<void> run, String label) async {
+    Duration? grace = options.timeoutGrace;
+    if (grace == null) return;
+    bool ended = await run
+        .then(_ended, onError: _endedWithError)
+        .timeout(grace, onTimeout: _stillRunning);
+    if (!ended) {
+      QueueLog.warn(
+        'Queue: $label still runs $grace after its timeout. '
+        'The next try may run at the same time.',
+      );
+    }
+  }
+
+  static bool _ended(void _) => true;
+  static bool _endedWithError(Object _) => true;
+  static bool _stillRunning() => false;
 
   /// the wait before the next try, after try number [attempts]
   static Duration backoffFor(DoxJob job, int attempts) {
@@ -179,7 +216,8 @@ class Worker {
         '`dart run build_runner build`, and restart the worker.',
       );
     }
-    return codec.decode(jsonDecode(payload.data) as Map<String, Object?>);
+    String data = Queue.readData(payload.data, payload.job);
+    return codec.decode(jsonDecode(data) as Map<String, Object?>);
   }
 
   Future<void> _fail(

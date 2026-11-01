@@ -17,7 +17,7 @@ import 'worker.dart';
 /// http server. Then it runs one command:
 /// - `work` (default): run jobs. Flags: `--queue=a,b`,
 ///   `--concurrency=N`, `--once`, `--tries=N`, `--timeout=SECONDS`,
-///   `--sleep=SECONDS`, `--stop-when-empty`.
+///   `--sleep=SECONDS`, `--stop-when-empty`, `--timeout-grace=SECONDS`.
 /// - `failed`: list the failed jobs.
 /// - `retry <id|all>`: put failed jobs back on their queue.
 /// - `forget <id>`: delete one failed job.
@@ -52,7 +52,10 @@ Flags of work:
   --tries=N           tries of a job that does not set tries (default: 1)
   --timeout=SECONDS   max run time of a job (default: 60)
   --sleep=SECONDS     the wait when the queues are empty (default: 3)
-  --stop-when-empty   stop when the queues are empty''';
+  --stop-when-empty   stop when the queues are empty
+  --timeout-grace=SECONDS
+                      after a timeout, wait up to this long for the old run
+                      to end before the next try (default: no wait)''';
 
   /// Run the command of [args]. Returns the exit code: 0 for success.
   Future<int> run(List<String> args) async {
@@ -260,6 +263,7 @@ class QueueCommand {
         timeout: Duration(seconds: _int(flags, 'timeout') ?? 60),
         sleep: Duration(seconds: _int(flags, 'sleep') ?? 3),
         stopWhenEmpty: flags.containsKey('stop-when-empty'),
+        timeoutGrace: _seconds(flags, 'timeout-grace'),
       ),
     );
   }
@@ -272,9 +276,16 @@ class QueueCommand {
     'timeout',
     'sleep',
     'stop-when-empty',
+    'timeout-grace',
   ];
 
   static String _trim(String value) => value.trim();
+
+  /// a flag in seconds, or null when the flag is not given
+  static Duration? _seconds(Map<String, String> flags, String key) {
+    int? seconds = _int(flags, key);
+    return seconds == null ? null : Duration(seconds: seconds);
+  }
 
   /// a whole number of 0 or more, or null when the flag is not given
   static int? _int(Map<String, String> flags, String key) {

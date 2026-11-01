@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'package:dox_core/dox_core.dart' show AESEncryptor, Dox;
+
 import 'job.dart';
 import 'job_registry.dart';
 import 'queue_config.dart';
@@ -57,11 +59,13 @@ class Queue {
       return id;
     }
     JobCodec codec = settings.jobs.of(job);
+    String data = jsonEncode(codec.encode(job), toEncodable: _toJson);
+    if (job is ShouldBeEncrypted) data = encryptData(data, codec.name);
     JobPayload payload = JobPayload(
       id: id,
       job: codec.name,
       queue: queue ?? job.queue,
-      data: jsonEncode(codec.encode(job), toEncodable: _toJson),
+      data: data,
     );
     await driver.push(payload, delay: delay ?? Duration.zero);
     return id;
@@ -83,6 +87,36 @@ class Queue {
     QueueDriver? driver = _driver;
     _driver = null;
     await driver?.close();
+  }
+
+  /// the key purpose of job data, so a value encrypted for something
+  /// else (eg. a cookie) can not be read as job data
+  static const String encryptPurpose = 'dox:queue';
+
+  /// Encrypt the JSON [data] of a [ShouldBeEncrypted] job with the app
+  /// key. The job name [job] is bound to it, so it can not be moved to
+  /// another job. The output is base64, so it never starts with `{`.
+  static String encryptData(String data, String job) {
+    return AESEncryptor.encode(
+      data,
+      Dox().config.appKey,
+      associatedData: job,
+      purpose: encryptPurpose,
+    );
+  }
+
+  /// The JSON data of a payload. Plain JSON starts with `{`, everything
+  /// else was made by [encryptData]. Throws a `DecryptException` when the
+  /// key is wrong or the data was changed.
+  static String readData(String data, String job) {
+    if (data.startsWith('{')) return data;
+    return AESEncryptor.decode(
+      data,
+      Dox().config.appKey,
+      associatedData: job,
+      purpose: encryptPurpose,
+      previousSecrets: Dox().config.previousKeys,
+    );
   }
 
   /// the job data has only JSON types, dates and enums

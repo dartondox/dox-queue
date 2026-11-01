@@ -65,7 +65,9 @@ abstract class DoxJob {
   /// The max run time of one try. Null: the worker `--timeout` value
   /// (default 60 seconds). Dart can not stop a running future, so after
   /// a timeout the try counts as failed, but [handle] keeps running in
-  /// the background until it ends.
+  /// the background until it ends. The next try can then run at the
+  /// same time. The worker `--timeout-grace` flag makes the worker wait
+  /// for the old run first.
   Duration? get timeout => null;
 
   /// The queue to put the job on. `dispatch(queue:)` wins over it.
@@ -93,3 +95,15 @@ abstract class DoxJob {
     return Queue.dispatchSync(this);
   }
 }
+
+/// Opt-in: save the job data encrypted, so a person who can read Redis
+/// or the `jobs` table can not read it. Like Laravel `ShouldBeEncrypted`.
+/// ```
+/// @Job()
+/// class ChargeCard extends DoxJob with ShouldBeEncrypted { ... }
+/// ```
+/// The data is encrypted with AES-GCM and the app key (`AppConfig.appKey`,
+/// see `AESEncryptor` of dox_core). The worker needs `Dox().initialize()`
+/// with the same key, or one of `AppConfig.previousKeys`. The job name,
+/// queue and id stay plain text.
+mixin ShouldBeEncrypted on DoxJob {}

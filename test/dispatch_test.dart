@@ -218,6 +218,7 @@ void main() {
       '--timeout=30',
       '--sleep=1',
       '--stop-when-empty',
+      '--timeout-grace=5',
     ]);
     expect(command.name, 'work');
     WorkerOptions options = command.options;
@@ -228,6 +229,8 @@ void main() {
     expect(options.timeout, const Duration(seconds: 30));
     expect(options.sleep, const Duration(seconds: 1));
     expect(options.stopWhenEmpty, isTrue);
+    expect(options.timeoutGrace, const Duration(seconds: 5));
+    expect(QueueCommand.parse(<String>[]).options.timeoutGrace, isNull);
     expect(QueueCommand.parse(<String>[]).name, 'work');
     expect(QueueCommand.parse(<String>['retry', 'all']).argument, 'all');
   });

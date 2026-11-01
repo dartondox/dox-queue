@@ -39,6 +39,7 @@ class QueueProvider extends DoxProvider {
       options: WorkerOptions(
         queues: config.workerQueues,
         concurrency: config.workerConcurrency,
+        timeoutGrace: config.workerTimeoutGrace,
       ),
     );
     _worker = worker;

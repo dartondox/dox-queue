@@ -49,6 +49,7 @@ QueueConfig queueConfig = QueueConfig(
 | `workInProcess` | `false` | run a worker inside the web server, see [Small apps](#small-apps-a-worker-in-the-web-server) |
 | `workerQueues` | `['default']` | the queues of the in-process worker |
 | `workerConcurrency` | `1` | jobs at once in the in-process worker |
+| `workerTimeoutGrace` | off | opt-in: after a timeout, the in-process worker waits up to this long for the old run (see Retries) |
 
 !!! warning "Keep `retryAfter` bigger than your longest job"
     `retryAfter` is how Dox finds the job of a crashed worker.
@@ -189,6 +190,23 @@ Any other type stops the build with a clear message.
     Do not save a `User`. Save the `userId`, and load the user in `handle()`.
     The user may change between dispatch and run. The id gives you fresh data.
 
+### Encrypted jobs
+
+Job data is saved as plain JSON in Redis or the `jobs` table.
+To hide it from anyone who can read the store, add `ShouldBeEncrypted`:
+
+```dart
+@Job()
+class ChargeCard extends DoxJob with ShouldBeEncrypted {
+  // ...
+}
+```
+
+The data is then encrypted with AES-GCM and the app key (`AppConfig.appKey`).
+The worker needs the same key, or the old key in `AppConfig.previousKeys`.
+The job name, queue and id stay plain text.
+Jobs without the mixin are saved as before.
+
 ### Services in a job
 
 A job is made again from its saved data, so it can not get services in its constructor.
@@ -262,6 +280,7 @@ Flags of `work`:
 | `--timeout=60` | `60` | max run time in seconds of a job that does not set `timeout` |
 | `--sleep=3` | `3` | seconds to wait when the queues are empty |
 | `--stop-when-empty` | off | stop when the queues are empty |
+| `--timeout-grace=30` | off | after a timeout, wait up to this many seconds for the old run to end before the next try |
 
 ```bash
 dart run bin/queue.dart work --queue=emails,default --concurrency=4
@@ -309,6 +328,15 @@ A timeout counts as a failed try.
     After a timeout the try counts as failed, but `handle()` keeps running in the background until it ends.
     Write jobs that are safe to run twice.
 
+So by default the next try can start while the old run still works.
+Then the job runs twice at the same time.
+To stop this, start the worker with `--timeout-grace=SECONDS` (or `WorkerOptions(timeoutGrace: ...)`, or `QueueConfig(workerTimeoutGrace: ...)` for the in-process worker).
+After a timeout, the worker then waits for the old run to end, up to that time, before it tries again or fails the job.
+The result of the old run is ignored: the try still counts as failed.
+While the worker waits, it takes no other job.
+If the old run is still going when the grace time ends, the worker logs a warning and goes on.
+Keep `timeout` plus the grace time below `retryAfter`, or another worker can take the job again while this one waits. Then the double run still happens.
+
 When a worker crashes, its job stays reserved. After `retryAfter` another worker takes it.
 This counts as a try. When there are no tries left, the job fails with a message that the worker did not finish.
 
@@ -348,6 +376,24 @@ QueueConfig queueConfig = QueueConfig(
   redis: RedisOptions(host: env.redisHost, port: 6379),
 );
 ```
+
+To read the Redis server from the env (or `.env`), use `QueueConfig.redisFromEnv()`:
+
+```dart
+QueueConfig queueConfig = QueueConfig(
+  driver: 'redis',
+  jobs: jobRegistry,
+  redis: QueueConfig.redisFromEnv(),
+);
+```
+
+It reads:
+
+- `REDIS_URL`, like `rediss://user:password@host:6380/0`. `rediss://` turns on TLS. When it is set, the keys below are not read.
+- Else `REDIS_HOST`, `REDIS_PORT`, `REDIS_USERNAME`, `REDIS_PASSWORD` and `REDIS_TLS` (`true` turns on TLS).
+
+A key that is not set keeps its default. With no keys it is localhost:6379.
+It is opt-in: when you leave out `redis`, the queue uses localhost:6379 and does not read the env.
 
 Each queue has a list of ready jobs, a sorted set of delayed jobs and a sorted set of reserved jobs.
 A Lua script takes a job, so two workers never get the same one. Failed jobs are in the hash `dox_queue:failed`.
