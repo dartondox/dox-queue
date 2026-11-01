@@ -1,11 +1,13 @@
 import 'dart:convert';
 
 import 'package:dox_core/dox_core.dart' show AESEncryptor, Dox;
+import 'package:dox_mailer/dox_mailer.dart' show Mail;
 
 import 'job.dart';
 import 'job_registry.dart';
 import 'queue_config.dart';
 import 'queue_driver.dart';
+import 'send_queued_mail.dart';
 
 /// Puts jobs on the queue. `QueueProvider` sets it up in every isolate.
 /// ```
@@ -22,9 +24,12 @@ class Queue {
 
   /// Use [config] in this isolate. `QueueProvider` calls it. Call it in
   /// tests, eg. with the `sync` driver.
+  ///
+  /// It also lets `Mail.queue()` of dox_mailer put mails on this queue.
   static void configure(QueueConfig config) {
     _config = config;
     _driver = null;
+    Mail.useQueue(const QueueMailQueue());
   }
 
   /// the config from [configure]
