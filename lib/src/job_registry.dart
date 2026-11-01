@@ -1,4 +1,5 @@
 import 'job.dart';
+import 'send_queued_mail.dart';
 
 /// Turns a job into a JSON map (its constructor parameters).
 typedef JobEncoder = Map<String, Object?> Function(DoxJob job);
@@ -24,10 +25,18 @@ class JobRegistry {
 
   final List<JobCodec> codecs;
 
+  /// The jobs of dox_queue itself, eg. the job of `Mail.queue()`. Every
+  /// registry finds them after its own [codecs], so an app does not add
+  /// them.
+  static const List<JobCodec> builtIn = <JobCodec>[
+    SendQueuedMail.codec,
+    SendEncryptedQueuedMail.codec,
+  ];
+
   /// the codec of a job class, or null
   JobCodec? byType(Type type) {
     // ponytail: a list scan, an app has few job classes
-    for (JobCodec codec in codecs) {
+    for (JobCodec codec in codecs.followedBy(builtIn)) {
       if (codec.type == type) return codec;
     }
     return null;
@@ -35,7 +44,7 @@ class JobRegistry {
 
   /// the codec of a saved job name, or null
   JobCodec? byName(String name) {
-    for (JobCodec codec in codecs) {
+    for (JobCodec codec in codecs.followedBy(builtIn)) {
       if (codec.name == name) return codec;
     }
     return null;
