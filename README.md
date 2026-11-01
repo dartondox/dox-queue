@@ -201,6 +201,23 @@ Any other type stops the build with a clear message.
 > Do not save a `User`. Save the `userId`, and load the user in `handle()`.
 > The user may change between dispatch and run. The id gives you fresh data.
 
+### Encrypted jobs
+
+Job data is saved as plain JSON in Redis or the `jobs` table.
+To hide it from anyone who can read the store, add `ShouldBeEncrypted`:
+
+```dart
+@Job()
+class ChargeCard extends DoxJob with ShouldBeEncrypted {
+  // ...
+}
+```
+
+The data is then encrypted with AES-GCM and the app key (`AppConfig.appKey`).
+The worker needs the same key, or the old key in `AppConfig.previousKeys`.
+The job name, queue and id stay plain text.
+Jobs without the mixin are saved as before.
+
 ### Services in a job
 
 A job is made again from its saved data, so it can not get services in its constructor.

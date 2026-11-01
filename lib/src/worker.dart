@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'job.dart';
 import 'job_registry.dart';
+import 'queue.dart';
 import 'queue_driver.dart';
 import 'queue_log.dart';
 
@@ -213,7 +214,8 @@ class Worker {
         '`dart run build_runner build`, and restart the worker.',
       );
     }
-    return codec.decode(jsonDecode(payload.data) as Map<String, Object?>);
+    String data = Queue.readData(payload.data, payload.job);
+    return codec.decode(jsonDecode(data) as Map<String, Object?>);
   }
 
   Future<void> _fail(

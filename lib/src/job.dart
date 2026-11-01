@@ -95,3 +95,15 @@ abstract class DoxJob {
     return Queue.dispatchSync(this);
   }
 }
+
+/// Opt-in: save the job data encrypted, so a person who can read Redis
+/// or the `jobs` table can not read it. Like Laravel `ShouldBeEncrypted`.
+/// ```
+/// @Job()
+/// class ChargeCard extends DoxJob with ShouldBeEncrypted { ... }
+/// ```
+/// The data is encrypted with AES-GCM and the app key (`AppConfig.appKey`,
+/// see `AESEncryptor` of dox_core). The worker needs `Dox().initialize()`
+/// with the same key, or one of `AppConfig.previousKeys`. The job name,
+/// queue and id stay plain text.
+mixin ShouldBeEncrypted on DoxJob {}
