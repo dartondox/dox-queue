@@ -116,13 +116,10 @@ class RedactedMailError implements Exception {
   /// the SMTP reply code or the HTTP status, when there is one
   final int? statusCode;
 
-  /// any email address, also one that is not in the mail. The length
-  /// limits (as in the email RFC) keep it fast on a long text.
-  static final RegExp _email = RegExp(
-    r'''[^\s<>()\[\]"',;:@]{1,64}@[^\s<>()\[\]"',;:@]{1,255}''',
-  );
-
-  static final RegExp _wordChar = RegExp(r'[\p{L}\p{N}_]', unicode: true);
+  /// the characters that end an email address: space, `<>()[]"',;:@`
+  static final Set<int> _notAddress = <int>{
+    ...' \t\r\n<>()[]"\',;:@'.codeUnits,
+  };
 
   /// [text] with `***` for:
   /// - every email address,
@@ -132,64 +129,117 @@ class RedactedMailError implements Exception {
   /// A text must be a whole word in [text], so the name `Ann` does not
   /// break `Annual`. Texts shorter than 3 letters and tags stay (tags
   /// are labels like `smtp`, so they would hide useful words). A part of
-  /// a text, or an encoded form (JSON, MIME, URL), is not found.
+  /// a text, an encoded form (JSON, MIME, URL) or another Unicode form
+  /// (NFC or NFD) is not found. Header names and metadata keys stay.
+  ///
+  /// It reads [text] once for the texts and once for the addresses, so
+  /// a long error with many recipients stays fast. No RegExp is made
+  /// from mail data (a RegExp of a long body is too large for Dart).
   static String redact(String text, Map<String, Object?> mail) {
-    List<String> secrets = <String>[];
-    _collect(mail, secrets);
-    secrets.sort(_longestFirst);
-    String result = text;
-    for (String secret in secrets) {
-      // a text longer than the error can not be in it
-      if (secret.length > result.length) continue;
-      result = _hide(result, secret);
-    }
-    return result.replaceAll(_email, '***');
-  }
-
-  /// [text] with `***` for each whole-word [secret], found with a plain
-  /// search (a RegExp of a long body is too large for Dart)
-  static String _hide(String text, String secret) {
     String lower = text.toLowerCase();
-    String needle = secret.toLowerCase();
     // ponytail: rare letters change length in lower case. Then the
     // places do not match, so work on the lower case text.
     String source = lower.length == text.length ? text : lower;
-    bool wordStart = _isWord(needle, 0);
-    bool wordEnd = _isWord(needle, needle.length - 1);
+    Map<int, _Texts> byStart = _secrets(mail, lower.length);
+    String result = byStart.isEmpty
+        ? source
+        : _hideTexts(source, lower, byStart);
+    return result.contains('@') ? _hideAddresses(result) : result;
+  }
+
+  /// the lower case texts of [mail] that fit in [max] letters, by their
+  /// first 3 letters
+  static Map<int, _Texts> _secrets(Map<String, Object?> mail, int max) {
+    List<String> texts = <String>[];
+    _collect(mail, texts);
+    Map<int, _Texts> byStart = <int, _Texts>{};
+    for (String value in texts) {
+      String secret = value.trim().toLowerCase();
+      if (secret.length < 3 || secret.length > max) continue;
+      byStart.putIfAbsent(_key(secret, 0), _Texts.new).add(secret);
+    }
+    return byStart;
+  }
+
+  /// the first 3 code units of [text] at [at], as one number
+  static int _key(String text, int at) {
+    return (text.codeUnitAt(at) << 32) |
+        (text.codeUnitAt(at + 1) << 16) |
+        text.codeUnitAt(at + 2);
+  }
+
+  /// one pass over [lower]: at each place, the longest whole-word text
+  /// of [byStart] that starts there is replaced by `***`
+  static String _hideTexts(
+    String source,
+    String lower,
+    Map<int, _Texts> byStart,
+  ) {
     StringBuffer out = StringBuffer();
     int start = 0;
-    int search = 0;
-    while (true) {
-      int at = lower.indexOf(needle, search);
-      if (at < 0) break;
-      int end = at + needle.length;
-      if ((wordStart && _isWord(lower, at - 1)) ||
-          (wordEnd && _isWord(lower, end))) {
-        search = at + 1;
+    int at = 0;
+    while (at + 3 <= lower.length) {
+      _Texts? texts = byStart[_key(lower, at)];
+      int? length = texts?.longestAt(lower, at);
+      if (length == null) {
+        at++;
         continue;
       }
       out
         ..write(source.substring(start, at))
         ..write('***');
-      start = end;
-      search = end;
+      at += length;
+      start = at;
     }
     out.write(source.substring(start));
     return out.toString();
   }
 
-  /// true when [text] has a letter, digit or `_` at [index]
+  /// [text] with `***` for every email address, of any length. Each `@`
+  /// grows left and right over address letters, so it is one pass.
+  static String _hideAddresses(String text) {
+    StringBuffer out = StringBuffer();
+    int start = 0;
+    int at = text.indexOf('@');
+    while (at >= 0) {
+      int left = at;
+      while (left > start && !_notAddress.contains(text.codeUnitAt(left - 1))) {
+        left--;
+      }
+      int right = at + 1;
+      while (right < text.length &&
+          !_notAddress.contains(text.codeUnitAt(right))) {
+        right++;
+      }
+      if (left < at && right > at + 1) {
+        out
+          ..write(text.substring(start, left))
+          ..write('***');
+        start = right;
+      }
+      at = text.indexOf('@', at + 1);
+    }
+    out.write(text.substring(start));
+    return out.toString();
+  }
+
+  /// true when [text] has a letter, digit or `_` at [index]. Every
+  /// letter that is not ASCII counts as a letter.
   static bool _isWord(String text, int index) {
     if (index < 0 || index >= text.length) return false;
-    return _wordChar.hasMatch(text[index]);
+    int c = text.codeUnitAt(index);
+    return (c >= 0x30 && c <= 0x39) ||
+        (c >= 0x41 && c <= 0x5a) ||
+        (c >= 0x61 && c <= 0x7a) ||
+        c == 0x5f ||
+        c >= 0x80;
   }
 
   /// every text in [value], but not the file bytes, content types and tags
   static void _collect(Object? value, List<String> into, [String? key]) {
     if (key == 'bytes' || key == 'contentType' || key == 'tags') return;
     if (value is String) {
-      String secret = value.trim();
-      if (secret.length >= 3) into.add(secret);
+      into.add(value);
     } else if (value is Map) {
       for (MapEntry<Object?, Object?> entry in value.entries) {
         _collect(entry.value, into, '${entry.key}');
@@ -201,12 +251,49 @@ class RedactedMailError implements Exception {
     }
   }
 
-  static int _longestFirst(String a, String b) => b.length - a.length;
-
   @override
   String toString() {
     String code = statusCode == null ? '' : ' (code $statusCode)';
     return 'RedactedMailError$code: $message';
+  }
+}
+
+/// The texts of a mail that start with the same 3 letters, by length.
+class _Texts {
+  final Map<int, Set<String>> _byLength = <int, Set<String>>{};
+  List<int> _lengths = <int>[];
+
+  void add(String text) {
+    Set<String>? same = _byLength[text.length];
+    if (same == null) {
+      same = <String>{};
+      _byLength[text.length] = same;
+      _lengths = <int>[..._lengths, text.length]..sort(_down);
+    }
+    same.add(text);
+  }
+
+  static int _down(int a, int b) => b - a;
+
+  /// the length of the longest text that is a whole word in [lower] at
+  /// [at], or null
+  int? longestAt(String lower, int at) {
+    for (int length in _lengths) {
+      int end = at + length;
+      if (end > lower.length) continue;
+      String part = lower.substring(at, end);
+      if (!_byLength[length]!.contains(part)) continue;
+      if (RedactedMailError._isWord(part, 0) &&
+          RedactedMailError._isWord(lower, at - 1)) {
+        continue;
+      }
+      if (RedactedMailError._isWord(part, length - 1) &&
+          RedactedMailError._isWord(lower, end)) {
+        continue;
+      }
+      return length;
+    }
+    return null;
   }
 }
 

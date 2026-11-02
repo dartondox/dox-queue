@@ -282,7 +282,7 @@ With `encrypt: true`, a send error is logged and saved with `***` in place of:
 - every email address,
 - each whole text of the mail: names, subject, body, header and metadata values, file names.
 
-The error type and the SMTP code stay. A part of a text, or an encoded form (JSON, MIME, URL), may still show. For strict needs, log only the error type and code.
+The error type and the SMTP code stay. A part of a text, an encoded form (JSON, MIME, URL), or another Unicode form (eg. `Zoë` as NFC or NFD) may still show. Header names and metadata keys are not hidden, only their values. For strict needs, log only the error type and code.
 
 ## Run the worker
 

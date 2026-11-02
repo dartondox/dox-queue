@@ -97,4 +97,63 @@ void main() {
     expect('$error', contains('10.0.0.5'));
     expect('$error', contains('587'));
   });
+
+  test('a long address that is not in the mail is hidden whole', () {
+    String local = 'L' * 200;
+    RedactedMailError error = RedactedMailError.of(
+      MailException('550 <$local@other.org>: no mailbox', statusCode: 550),
+      _mail(),
+    );
+    expect(
+      '$error',
+      'RedactedMailError (code 550): '
+          'MailException: 550 <***>: no mailbox',
+    );
+  });
+
+  test('a 5 MB error with no spaces is fast', () {
+    String half = 'x' * (5 * 512 * 1024);
+    Stopwatch watch = Stopwatch()..start();
+    RedactedMailError plain = RedactedMailError.of(
+      MailException('$half$half'),
+      _mail(),
+    );
+    RedactedMailError address = RedactedMailError.of(
+      MailException('$half@$half'),
+      _mail(),
+    );
+    watch.stop();
+    print('5 MB errors with no spaces: ${watch.elapsedMilliseconds} ms');
+    expect(plain.message.length, greaterThan(5 * 1024 * 1024));
+    expect(address.message, 'MailException: ***');
+    // generous, so CI is not flaky. Locally it is far less.
+    expect(watch.elapsed, lessThan(const Duration(seconds: 5)));
+  });
+
+  test('5000 recipients and a 1 MB error are fast', () {
+    List<Address> to = <Address>[
+      for (int i = 0; i < 5000; i++) Address('user$i@example.com', 'User $i'),
+    ];
+    Map<String, Object?> mail = Message(
+      from: const Address('app@example.com'),
+      to: to,
+      subject: 'Hi',
+      text: 'Hello',
+    ).toJson();
+    StringBuffer text = StringBuffer('550 refused: ');
+    while (text.length < 1024 * 1024) {
+      text.write('User 42 said no to user42@example.com. ');
+    }
+    Stopwatch watch = Stopwatch()..start();
+    RedactedMailError error = RedactedMailError.of(
+      MailException('$text', statusCode: 550),
+      mail,
+    );
+    watch.stop();
+    expect(error.message, isNot(contains('User 42')));
+    expect(error.message, isNot(contains('example.com')));
+    expect(error.message, contains('550 refused: *** said no to ***.'));
+    print('5000 recipients, 1 MB error: ${watch.elapsedMilliseconds} ms');
+    expect(watch.elapsed, lessThan(const Duration(seconds: 5)));
+  });
 }
