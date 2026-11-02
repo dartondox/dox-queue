@@ -479,6 +479,49 @@ void main() {
 }
 ```
 
+To check that your code dispatched a job, without running the job, use `Queue.fake()`. It keeps every dispatched job in a list. It does not run or save them. It needs no `Queue.configure()`.
+
+```dart
+import 'package:dox_queue/dox_queue.dart';
+import 'package:test/test.dart';
+
+void main() {
+  late QueueFake queue;
+
+  setUp(() {
+    queue = Queue.fake();
+  });
+
+  tearDown(Queue.restore);
+
+  test('signing up queues the welcome email', () async {
+    await signUp(userId: 1);
+
+    queue.assertPushed<SendWelcomeEmail>();
+    queue.assertPushed<SendWelcomeEmail>(
+      (SendWelcomeEmail job) => job.userId == 1,
+    );
+    queue.assertPushedTimes<SendWelcomeEmail>(1);
+    queue.assertNotPushed<SendInvoice>();
+  });
+}
+```
+
+| Method | Checks |
+|---|---|
+| `assertPushed<T>([test])` | a `T` job was pushed. With `test`, one of them passes it. |
+| `assertPushedTimes<T>(n)` | exactly `n` `T` jobs were pushed |
+| `assertNotPushed<T>()` | no `T` job was pushed |
+| `assertNothingPushed()` | no job was pushed at all |
+
+A failed check throws an `AssertionError` that says what was pushed.
+
+To read the jobs, use `queue.pushed`. Each item has the `job`, the `queue` name and the `delay` (null when there was none). `queue.jobsOf<T>()` gives the `T` jobs. `queue.clear()` forgets them.
+
+- `dispatchSync()` is not faked. It still runs the job.
+- `Mail.queue()` and `Mail.later()` of dox_mailer go through `dispatch()`, so the fake catches them too.
+- `Queue.restore()` stops the fake.
+
 To test a job alone, call `handle()`:
 
 ```dart
