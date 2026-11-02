@@ -14,6 +14,42 @@ String _failure(void Function() body) {
   fail('it did not throw');
 }
 
+class UserJob extends DoxJob {
+  @override
+  Future<void> handle() async {}
+}
+
+class UniJob extends DoxJob {
+  @override
+  Future<void> handle() async {}
+}
+
+class EuJob extends DoxJob {
+  @override
+  Future<void> handle() async {}
+}
+
+class UploadJob extends DoxJob {
+  @override
+  Future<void> handle() async {}
+}
+
+class OrderJob extends DoxJob {
+  @override
+  Future<void> handle() async {}
+}
+
+class _CustomQueue implements MailQueue {
+  @override
+  Future<String> push(
+    String mailer,
+    Message message, {
+    Duration? delay,
+    String? queue,
+    bool encrypt = false,
+  }) async => 'id';
+}
+
 bool _isUser2(SendWelcomeEmail job) => job.userId == 2;
 
 bool _isUser9(SendWelcomeEmail job) => job.userId == 9;
@@ -136,5 +172,39 @@ void main() {
     await SendWelcomeEmail(userId: 4).dispatch();
     expect(JobLog.handled, <String>['welcome 4']);
     expect(queue.pushed, isEmpty);
+  });
+
+  test('the article is "a" for a "you" sound, "an" for other vowels', () {
+    expect(
+      _failure(queue.assertPushed<UserJob>),
+      startsWith('Expected a UserJob job'),
+    );
+    expect(
+      _failure(queue.assertPushed<UniJob>),
+      startsWith('Expected a UniJob job'),
+    );
+    expect(
+      _failure(queue.assertPushed<EuJob>),
+      startsWith('Expected a EuJob job'),
+    );
+    expect(
+      _failure(queue.assertPushed<UploadJob>),
+      startsWith('Expected an UploadJob job'),
+    );
+    expect(
+      _failure(queue.assertPushed<OrderJob>),
+      startsWith('Expected an OrderJob job'),
+    );
+  });
+
+  test('restore puts back a Mail.useQueue() set before the fake', () {
+    Queue.restore();
+    _CustomQueue custom = _CustomQueue();
+    Mail.useQueue(custom);
+    Queue.fake();
+    expect(Mail.mailQueue, isNot(same(custom)));
+    Queue.restore();
+    expect(Mail.mailQueue, same(custom));
+    Mail.useQueue(null);
   });
 }

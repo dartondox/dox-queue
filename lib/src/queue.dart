@@ -1,7 +1,8 @@
 import 'dart:convert';
 
 import 'package:dox_core/dox_core.dart' show AESEncryptor, Dox;
-import 'package:dox_mailer/dox_mailer.dart' show Mail;
+import 'package:dox_mailer/dox_mailer.dart'
+    show ArrayTransport, Mail, MailQueue;
 
 import 'job.dart';
 import 'job_registry.dart';
@@ -23,6 +24,7 @@ class Queue {
   static QueueConfig? _config;
   static QueueDriver? _driver;
   static QueueFake? _fake;
+  static MailQueue? _mailQueueBeforeFake;
 
   /// Keep dispatched jobs in a [QueueFake] and run or save none of them,
   /// so a test can check what was pushed. It needs no [configure]. It
@@ -37,17 +39,33 @@ class Queue {
   /// ```
   static QueueFake fake() {
     QueueFake fake = QueueFake();
+    // keep the mail queue set before the fake (a second fake() keeps the first)
+    if (_fake == null) _mailQueueBeforeFake = _currentMailQueue();
     _fake = fake;
     Mail.useQueue(const QueueMailQueue());
     return fake;
   }
 
-  /// Stop the fake: [dispatch] uses the config again. `Mail.queue()` uses
-  /// this queue again only when [configure] was called. Else it has no
-  /// queue, like before [fake].
+  /// Stop the fake: [dispatch] uses the config again. `Mail.queue()` gets
+  /// the queue it had before [fake] (also one from `Mail.useQueue()`). If
+  /// it had none, it uses this queue when [configure] was called, else it
+  /// has no queue.
   static void restore() {
+    MailQueue? before = _mailQueueBeforeFake;
     _fake = null;
-    Mail.useQueue(_config == null ? null : const QueueMailQueue());
+    _mailQueueBeforeFake = null;
+    Mail.useQueue(before ?? (_config == null ? null : const QueueMailQueue()));
+  }
+
+  /// the queue of `Mail.useQueue()`, or null. While `Mail.fake()` is on,
+  /// `Mail.mailQueue` gives that fake, which is not a queue to keep.
+  static MailQueue? _currentMailQueue() {
+    try {
+      MailQueue queue = Mail.mailQueue;
+      return queue is ArrayTransport ? null : queue;
+    } on StateError {
+      return null;
+    }
   }
 
   /// Use [config] in this isolate. `QueueProvider` calls it. Call it in
