@@ -60,11 +60,11 @@ void main() {
     expect(
       _failure(() => queue.assertPushed<SendWelcomeEmail>(_isUser9)),
       'Expected a SendWelcomeEmail job that passes the test to be pushed, '
-      'but none of the 1 pushed SendWelcomeEmail jobs passed it.',
+      'but none of the 1 pushed SendWelcomeEmail job passed it.',
     );
     expect(
       _failure(queue.assertPushed<AllTypesJob>),
-      'Expected a AllTypesJob job to be pushed. Pushed: SendWelcomeEmail.',
+      'Expected an AllTypesJob job to be pushed. Pushed: SendWelcomeEmail.',
     );
   });
 
@@ -75,7 +75,7 @@ void main() {
     queue.assertPushedTimes<AllTypesJob>(0);
     expect(
       _failure(() => queue.assertPushedTimes<SendWelcomeEmail>(1)),
-      'Expected SendWelcomeEmail to be pushed 1 times, but it was pushed '
+      'Expected SendWelcomeEmail to be pushed 1 time, but it was pushed '
       '2 times.',
     );
   });
@@ -86,7 +86,7 @@ void main() {
     expect(
       _failure(queue.assertNotPushed<SendWelcomeEmail>),
       'Expected no SendWelcomeEmail job to be pushed, but it was pushed '
-      '1 times.',
+      '1 time.',
     );
   });
 
