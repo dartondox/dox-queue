@@ -193,9 +193,13 @@ void main() {
         // still enough to find the problem
         printOnFailure(log);
         expect(log, contains('failed try 1 of 2'));
-        expect(log, contains('550 5.1.1 <***>: mailbox unavailable'));
-        expect(error, contains('RedactedMailError (code 550)'));
-        expect(error, contains('MailException: 550 5.1.1 <***>'));
+        expect(log, contains('RedactedMailError: MailException (code 550).'));
+        expect(error, contains('RedactedMailError: MailException (code 550).'));
+        // the app key gives back the full error
+        expect(
+          RedactedMailError.decrypt(error),
+          startsWith('MailException: 550 5.1.1 <ANN@example.com>'),
+        );
       });
 
       test('encrypt: true: a 100 KB body is not in the error', () async {
@@ -207,7 +211,7 @@ void main() {
         for (String text in <String>[log, error]) {
           expect(text, isNot(contains('918273')));
           expect(text, isNot(contains('xxxx')));
-          expect(text, contains('(code 552): MailException: 552'));
+          expect(text, contains('MailException (code 552). Details are'));
         }
       });
 

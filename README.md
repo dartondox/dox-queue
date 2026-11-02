@@ -277,21 +277,8 @@ dox_queue has a built-in job for it. It is not in `lib/generated/jobs.g.dart`, a
 
 Deploy the worker together with the web app. An old worker does not know this job, so it fails the queued emails.
 
-With `encrypt: true`, a send error is logged and saved with `***` in place of:
-
-- every email address,
-- each whole text of the mail: names, subject, body, header names and values, metadata keys and values, file names.
-
-The error type and the SMTP code stay. Catch it as `RedactedMailError`: it has `type`, `message` and `statusCode`.
-
-Some mail data can still show:
-
-- A text shorter than 3 letters stays.
-- Tags are never hidden. They are labels like `smtp`, so hiding them would hide useful words.
-- A text is hidden only as a whole word. Text joined to other letters stays, eg. `code2` when the subject is `code`.
-- A part of a text, an encoded form (JSON, MIME, URL), or another Unicode form (eg. `Zoë` as NFC or NFD) is not found.
-
-An error longer than 16 KB is cut to its first 16 KB, and the text says it was cut. This keeps the worker fast. For strict needs, log only the error type and code.
+With `encrypt: true`, a send error is logged and saved as its type and code only, eg. `RedactedMailError: MailException (code 550). Details are encrypted: ...`.
+The full error text (at most 64 KB) is encrypted with the app key. To read it, pass the saved error to `RedactedMailError.decrypt(job.error)`.
 
 ## Run the worker
 
