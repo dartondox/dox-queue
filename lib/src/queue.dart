@@ -7,6 +7,7 @@ import 'job.dart';
 import 'job_registry.dart';
 import 'queue_config.dart';
 import 'queue_driver.dart';
+import 'queue_fake.dart';
 import 'send_queued_mail.dart';
 
 /// Puts jobs on the queue. `QueueProvider` sets it up in every isolate.
@@ -21,6 +22,30 @@ import 'send_queued_mail.dart';
 class Queue {
   static QueueConfig? _config;
   static QueueDriver? _driver;
+  static QueueFake? _fake;
+
+  /// Keep dispatched jobs in a [QueueFake] and run or save none of them,
+  /// so a test can check what was pushed. It needs no [configure]. It
+  /// also catches `Mail.queue()` and `Mail.later()` of dox_mailer.
+  /// [dispatchSync] still runs the job. [restore] undoes it.
+  /// ```
+  /// QueueFake queue = Queue.fake();
+  /// await signUp('ann@example.com');
+  /// queue.assertPushed<SendWelcomeEmail>(
+  ///   (SendWelcomeEmail job) => job.userId == 1,
+  /// );
+  /// ```
+  static QueueFake fake() {
+    QueueFake fake = QueueFake();
+    _fake = fake;
+    Mail.useQueue(const QueueMailQueue());
+    return fake;
+  }
+
+  /// Stop the fake: [dispatch] uses the config again.
+  static void restore() {
+    _fake = null;
+  }
 
   /// Use [config] in this isolate. `QueueProvider` calls it. Call it in
   /// tests, eg. with the `sync` driver.
@@ -57,6 +82,11 @@ class Queue {
     Duration? delay,
     String? queue,
   }) async {
+    QueueFake? fake = _fake;
+    if (fake != null) {
+      fake.pushed.add(PushedJob(job, queue: queue ?? job.queue, delay: delay));
+      return JobPayload.newId();
+    }
     QueueConfig settings = config;
     String id = JobPayload.newId();
     if (settings.driver == 'sync') {
