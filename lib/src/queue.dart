@@ -42,9 +42,12 @@ class Queue {
     return fake;
   }
 
-  /// Stop the fake: [dispatch] uses the config again.
+  /// Stop the fake: [dispatch] uses the config again. `Mail.queue()` uses
+  /// this queue again only when [configure] was called. Else it has no
+  /// queue, like before [fake].
   static void restore() {
     _fake = null;
+    Mail.useQueue(_config == null ? null : const QueueMailQueue());
   }
 
   /// Use [config] in this isolate. `QueueProvider` calls it. Call it in

@@ -124,6 +124,12 @@ void main() {
     expect(queue.pushed.last.delay, Duration(minutes: 1));
   });
 
+  test('restore takes back Mail.queue() when there is no config', () {
+    Queue.restore();
+    // like before Queue.fake(): Mail.queue() has no queue
+    expect(() => Mail.mailQueue, throwsStateError);
+  });
+
   test('restore stops the fake', () async {
     Queue.restore();
     Queue.configure(QueueConfig());
