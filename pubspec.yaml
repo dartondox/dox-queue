@@ -21,3 +21,7 @@ dev_dependencies:
   build_test: ^3.5.23
   lints: ^6.1.0
   test: ^1.33.0
+
+# The `dox` CLI finds the commands of this package here (`dox queue:table`).
+dox:
+  commands: package:dox_queue/commands.dart

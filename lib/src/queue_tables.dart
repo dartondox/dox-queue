@@ -3,7 +3,7 @@ import 'package:dox_orm/dox_orm.dart';
 import 'drivers/database_queue_driver.dart';
 
 /// The `jobs` and `failed_jobs` tables of the `database` driver.
-/// Add a migration in `db/migration` that calls it:
+/// `dox queue:table` writes a migration in `db/migration` that calls it:
 /// ```
 /// class CreateQueueTables extends Migration {
 ///   @override

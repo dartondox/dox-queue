@@ -98,9 +98,18 @@ The worker starts the providers of your app (database, cache, queue). It does no
 
 ### 4. Tables (database driver only)
 
-Add a migration in `db/migration`. `QueueTables` makes the `jobs` and `failed_jobs` tables.
+Run `dox queue:table`. It writes a migration in `db/migration` that makes the `jobs` and `failed_jobs` tables. Then run `dox migrate`.
 
-`db/migration/2026_10_25_000000000_create_queue_tables.dart`:
+```bash
+dox queue:table
+dox migrate
+```
+
+`queue:table` is a [package command](https://dartondox.dev/digging-deeper/package-commands/) of `dox_queue`. It does not overwrite: when a `create_queue_tables` migration is already there, it prints so and stops.
+
+The migration it writes looks like this. You can also write it by hand. `QueueTables` makes the two tables.
+
+`db/migration/2026_10_25_000000_create_queue_tables.dart`:
 
 ```dart
 // ignore_for_file: file_names
@@ -120,8 +129,6 @@ class CreateQueueTables extends Migration {
   }
 }
 ```
-
-Then run `dox migrate`.
 
 ## Write a job
 
