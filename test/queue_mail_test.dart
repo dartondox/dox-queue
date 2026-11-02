@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:dox_core/dox_core.dart' show AppConfig, Dox, LoggerConfig;
 import 'package:dox_mailer/dox_mailer.dart';
 import 'package:dox_queue/dox_queue.dart';
 import 'package:test/test.dart';
@@ -19,6 +22,49 @@ class BrokenTransport extends Transport {
 }
 
 late BrokenTransport brokenMailer;
+
+/// a mail server that says no, and names the recipient and the subject,
+/// like many SMTP servers do
+class RejectTransport extends Transport {
+  @override
+  Future<SentMessage> send(Message message) async {
+    throw MailException(
+      '550 5.1.1 <ANN@example.com>: mailbox unavailable '
+      '(subject "Your invoice", for Ann, forwarded to ann.lee@other.org)',
+      statusCode: 550,
+    );
+  }
+}
+
+/// a mail server that quotes the whole body in its answer
+class QuoteTransport extends Transport {
+  @override
+  Future<SentMessage> send(Message message) async {
+    throw MailException(
+      '552 message refused: ${message.html}',
+      statusCode: 552,
+    );
+  }
+}
+
+/// every line the worker logs while [body] runs
+Future<String> _logOf(Future<void> Function() body) async {
+  StringBuffer log = StringBuffer();
+  void keep(Zone self, ZoneDelegate parent, Zone zone, String line) {
+    log.writeln(line);
+  }
+
+  await runZoned(body, zoneSpecification: ZoneSpecification(print: keep));
+  return log.toString();
+}
+
+/// the parts of the test mail that must not be in a log
+const List<String> _secrets = <String>[
+  'ann@example.com',
+  'ann.lee@other.org',
+  'Your invoice',
+  'Ann',
+];
 
 Message _message() => Message(
   to: <Address>[const Address('ann@example.com', 'Ann')],
@@ -45,7 +91,17 @@ Future<JobPayload> _work([String queue = 'default', int tries = 1]) async {
 }
 
 void main() {
-  setUpAll(setUpTestApp);
+  setUpAll(() {
+    setUpTestApp();
+    // log on, so the tests can read what the worker logs
+    Dox().initialize(
+      AppConfig(
+        appKey: 'k' * 32,
+        totalIsolate: 1,
+        logger: LoggerConfig(enabled: true),
+      ),
+    );
+  });
 
   setUp(() {
     Mail.restore();
@@ -60,6 +116,8 @@ void main() {
           'main': mainMailer,
           'other': otherMailer,
           'broken': brokenMailer,
+          'reject': RejectTransport(),
+          'quote': QuoteTransport(),
         },
       ),
     );
@@ -123,6 +181,47 @@ void main() {
         expect(await Queue.driver.pop('default'), isNull);
       });
 
+      test('encrypt: true: a send error shows no mail data', () async {
+        await Mail.mailer('reject').queue(_message(), encrypt: true);
+        String log = await _logOf(_retryThenFail);
+        List<FailedJob> failed = await Queue.driver.failed();
+        String error = failed.single.error;
+        for (String secret in _secrets) {
+          expect(log, isNot(contains(secret)));
+          expect(error, isNot(contains(secret)));
+        }
+        // still enough to find the problem
+        printOnFailure(log);
+        expect(log, contains('failed try 1 of 2'));
+        expect(log, contains('RedactedMailError: MailException (code 550).'));
+        expect(error, contains('RedactedMailError: MailException (code 550).'));
+        // the app key gives back the full error
+        expect(
+          RedactedMailError.decrypt(error),
+          startsWith('MailException: 550 5.1.1 <ANN@example.com>'),
+        );
+      });
+
+      test('encrypt: true: a 100 KB body is not in the error', () async {
+        String html = '<p>Your reset code is 918273</p>${'x' * 100 * 1024}';
+        Message message = _message().copyWith(html: html);
+        await Mail.mailer('quote').queue(message, encrypt: true);
+        String log = await _logOf(_retryThenFail);
+        String error = (await Queue.driver.failed()).single.error;
+        for (String text in <String>[log, error]) {
+          expect(text, isNot(contains('918273')));
+          expect(text, isNot(contains('xxxx')));
+          expect(text, contains('MailException (code 552). Details are'));
+        }
+      });
+
+      test('a plain mail job keeps the full error, as before', () async {
+        await Mail.mailer('reject').queue(_message());
+        await _logOf(_retryThenFail);
+        List<FailedJob> failed = await Queue.driver.failed();
+        expect(failed.single.error, contains('<ANN@example.com>'));
+      });
+
       test('encrypt: true saves the mail encrypted', () async {
         await Mail.queue(_message(), encrypt: true);
         JobPayload payload = await _work();
@@ -134,4 +233,10 @@ void main() {
       });
     });
   }
+}
+
+/// two tries: the first is released, the second fails
+Future<void> _retryThenFail() async {
+  await _work('default', 2);
+  await _work('default', 2);
 }
