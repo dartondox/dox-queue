@@ -26,7 +26,7 @@ class QueueTableCommand extends Command {
       exitCode = 1;
       return;
     }
-    String file = path.split(Platform.pathSeparator).last;
+    String file = File(path).uri.pathSegments.last;
     print('\x1B[32m$file migration created successfully.\x1B[0m');
     print('Run `dox migrate` to make the tables.');
   }

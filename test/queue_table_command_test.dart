@@ -20,6 +20,16 @@ void main() {
     expect(commands.map((Command c) => c.name), contains('queue:table'));
   });
 
+  test('does not add a second one to an app from the template', () async {
+    /// the template has a 9-digit time in this file name
+    File('${folder.path}/2026_10_25_000000000_create_queue_tables.dart')
+        .writeAsStringSync('// template');
+    await QueueTableCommand(migrations: MigrationFile(folder: folder))
+        .run(<String>[]);
+    expect(folder.listSync(), hasLength(1));
+    expect(exitCode, 1);
+  });
+
   test('writes the migration once', () async {
     QueueTableCommand command = QueueTableCommand(
       migrations: MigrationFile(folder: folder),
