@@ -278,7 +278,7 @@ dox_queue has a built-in job for it. It is not in `lib/generated/jobs.g.dart`, a
 Deploy the worker together with the web app. An old worker does not know this job, so it fails the queued emails.
 
 With `encrypt: true`, a send error is logged and saved as its type and code only, eg. `RedactedMailError: MailException (code 550). Details are encrypted: ...`.
-The full error text (at most 64 KB) is encrypted with the app key. To read it, pass the saved error to `RedactedMailError.decrypt(job.error)`.
+The full error text, with the answer of the server, is encrypted with the app key (at most the first 64K characters, counted in UTF-16 code units). To read it, take a `FailedJob` from `Queue.driver.failed()` and call `RedactedMailError.decrypt(job.error)`.
 
 ## Run the worker
 

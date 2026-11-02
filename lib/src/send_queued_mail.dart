@@ -1,3 +1,4 @@
+import 'package:dox_core/dox_core.dart' show AESEncryptor, Dox;
 import 'package:dox_mailer/dox_mailer.dart'
     show Mail, MailException, MailQueue, Message;
 
@@ -92,9 +93,11 @@ class SendEncryptedQueuedMail extends SendQueuedMail with ShouldBeEncrypted {
 /// text.
 ///
 /// Its text has only the type of the first error and the SMTP or HTTP
-/// code. The full text of the first error is encrypted with the app key,
-/// like the job data. At most the first 64 KB of it is encrypted, so a
-/// huge error does not fill the log. Read it with [decrypt].
+/// code. The full text of the first error (and the answer of the server,
+/// `MailException.body`) is encrypted with the app key, like the job
+/// data. At most the first 64K characters (UTF-16 code units) are
+/// encrypted, so a huge error does not fill the log. Read it with
+/// [decrypt].
 /// ```
 /// RedactedMailError: MailException (code 550). Details are encrypted: <base64>
 /// ```
@@ -102,24 +105,39 @@ class RedactedMailError implements Exception {
   RedactedMailError(this.type, {this.statusCode, this.details});
 
   /// [error] with its text encrypted. When that fails, only the type
-  /// is kept, never the text.
+  /// (and the code) is kept, never the text. Everything is read from
+  /// [error] inside the `try`, so an error that throws can not leak.
   factory RedactedMailError.of(Object error) {
-    String type = '${error.runtimeType}';
+    String type = 'unknown';
     int? code;
     String? details;
     try {
+      type = '${error.runtimeType}';
       code = error is MailException ? error.statusCode : null;
       String text = '$error';
-      if (text.length > maxDetails) text = text.substring(0, maxDetails);
-      details = Queue.encryptData(text, _purpose);
+      if (error is MailException && (error.body ?? '').isNotEmpty) {
+        text = '$text\nbody: ${error.body}';
+      }
+      details = Queue.encryptData(_cut(text), _purpose);
     } catch (_) {
       details = null;
     }
     return RedactedMailError(type, statusCode: code, details: details);
   }
 
-  /// the most letters of the first error that are encrypted
+  /// the most characters (UTF-16 code units) of the error that are
+  /// encrypted
   static const int maxDetails = 64 * 1024;
+
+  /// the first [maxDetails] characters of [text]. It does not cut an
+  /// emoji (a surrogate pair) in two.
+  static String _cut(String text) {
+    if (text.length <= maxDetails) return text;
+    int end = maxDetails;
+    int last = text.codeUnitAt(end - 1);
+    if (last >= 0xD800 && last <= 0xDBFF) end--;
+    return text.substring(0, end);
+  }
 
   /// bound to the encrypted details, so job data can not be read as them
   static const String _purpose = 'dox_queue:RedactedMailError';
@@ -139,7 +157,8 @@ class RedactedMailError implements Exception {
   /// The text of the first error, from a saved or logged [error] text
   /// (eg. the `error` of a failed job). Needs the same app key, or one
   /// of `AppConfig.previousKeys`. Null when it has no details. Throws a
-  /// `DecryptException` when the key is wrong.
+  /// `DecryptException` when the key is wrong, or the details are not
+  /// real encrypted details.
   /// ```
   /// for (FailedJob job in await Queue.driver.failed()) {
   ///   print(RedactedMailError.decrypt(job.error));
@@ -150,7 +169,13 @@ class RedactedMailError implements Exception {
     if (at < 0) return null;
     String rest = error.substring(at + _marker.length);
     String details = rest.split(RegExp(r'\s')).first;
-    return Queue.readData(details, _purpose);
+    return AESEncryptor.decode(
+      details,
+      Dox().config.appKey,
+      associatedData: _purpose,
+      purpose: Queue.encryptPurpose,
+      previousSecrets: Dox().config.previousKeys,
+    );
   }
 
   @override

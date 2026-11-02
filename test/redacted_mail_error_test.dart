@@ -13,6 +13,25 @@ class BadTextError extends MailException {
   String toString() => throw StateError('no text');
 }
 
+/// an error with a given text
+class TextError implements Exception {
+  TextError(this.text);
+
+  final String text;
+
+  @override
+  String toString() => text;
+}
+
+/// an error whose type can not be read
+class BadTypeError implements Exception {
+  @override
+  Type get runtimeType => throw StateError('ann@example.com');
+
+  @override
+  String toString() => 'ann@example.com';
+}
+
 /// the texts that must never be in the plain text of the error
 const List<String> _secrets = <String>[
   'ann@example.com',
@@ -67,7 +86,7 @@ void main() {
     expect(RedactedMailError.decrypt(saved), 'MailException: $text');
   });
 
-  test('only the first 64 KB of a huge error is encrypted', () {
+  test('only the first 64K characters of a huge error are encrypted', () {
     String text = 'x' * (5 * 1024 * 1024);
     RedactedMailError error = RedactedMailError.of(MailException(text));
     expect('$error'.length, lessThan(100 * 1024));
@@ -115,6 +134,47 @@ void main() {
     expect(error.statusCode, isNull);
     expect('$error', startsWith('RedactedMailError: SocketException. '));
     expect(RedactedMailError.decrypt('$error'), contains('10.0.0.5'));
+  });
+
+  test('the cut does not split an emoji', () {
+    int max = RedactedMailError.maxDetails;
+    String text = '${'x' * (max - 1)}😀 and more';
+    String? back = RedactedMailError.decrypt(
+      '${RedactedMailError.of(TextError(text))}',
+    );
+    expect(back, 'x' * (max - 1));
+  });
+
+  test('the answer of the server is in the encrypted details', () {
+    RedactedMailError error = RedactedMailError.of(
+      MailException(
+        'the API said no',
+        statusCode: 422,
+        body: '{"to":"ann@example.com"}',
+      ),
+    );
+    expect('$error', isNot(contains('ann@example.com')));
+    expect(
+      RedactedMailError.decrypt('$error'),
+      'MailException: the API said no\nbody: {"to":"ann@example.com"}',
+    );
+  });
+
+  test('an error whose type throws gives only "unknown"', () {
+    RedactedMailError error = RedactedMailError.of(BadTypeError());
+    expect(
+      '$error',
+      'RedactedMailError: unknown. details could not be encrypted',
+    );
+  });
+
+  test('decrypt only takes real encrypted details', () {
+    expect(
+      () => RedactedMailError.decrypt(
+        'RedactedMailError: X. Details are encrypted: {"to":"ann@example.com"}',
+      ),
+      throwsA(isA<DecryptException>()),
+    );
   });
 }
 
