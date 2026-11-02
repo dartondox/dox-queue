@@ -116,6 +116,10 @@ class RedactedMailError implements Exception {
   /// the SMTP reply code or the HTTP status, when there is one
   final int? statusCode;
 
+  /// the most letters of an error that are redacted. The rest is cut,
+  /// so a huge error can not block the worker for seconds.
+  static const int maxLength = 16 * 1024;
+
   /// the characters that end an email address: space, `<>()[]"',;:@`
   static final Set<int> _notAddress = <int>{
     ...' \t\r\n<>()[]"\',;:@'.codeUnits,
@@ -123,42 +127,102 @@ class RedactedMailError implements Exception {
 
   /// [text] with `***` for:
   /// - every email address,
-  /// - every whole text of [mail]: names, subject, body, header and
-  ///   metadata values, file names. Case does not count.
+  /// - every whole text of [mail]: names, subject, body, header names and
+  ///   values, metadata keys and values, file names. Case does not count.
+  ///
+  /// Only the first [maxLength] letters are kept, and the text then says
+  /// it was cut. A text of [mail] that starts near the cut and goes past
+  /// it is hidden up to the cut.
   ///
   /// A text must be a whole word in [text], so the name `Ann` does not
   /// break `Annual`. Texts shorter than 3 letters and tags stay (tags
   /// are labels like `smtp`, so they would hide useful words). A part of
   /// a text, an encoded form (JSON, MIME, URL) or another Unicode form
-  /// (NFC or NFD) is not found. Header names and metadata keys stay.
+  /// (NFC or NFD) is not found.
   ///
   /// It reads [text] once for the texts and once for the addresses, so
   /// a long error with many recipients stays fast. No RegExp is made
   /// from mail data (a RegExp of a long body is too large for Dart).
   static String redact(String text, Map<String, Object?> mail) {
+    int fullLength = text.length;
+    bool cut = fullLength > maxLength;
+    if (cut) text = text.substring(0, maxLength);
     String lower = text.toLowerCase();
     // ponytail: rare letters change length in lower case. Then the
     // places do not match, so work on the lower case text.
     String source = lower.length == text.length ? text : lower;
-    Map<int, _Texts> byStart = _secrets(mail, lower.length);
+    List<String> secrets = _secrets(mail);
+    String tail = '';
+    if (cut) {
+      tail = ' ... (cut, $fullLength letters in all)';
+      int? at = _cutStart(lower, secrets);
+      if (at != null) {
+        source = source.substring(0, at);
+        lower = lower.substring(0, at);
+        tail = '***$tail';
+      }
+    }
+    Map<int, _Texts> byStart = _byStart(secrets, lower.length);
     String result = byStart.isEmpty
         ? source
         : _hideTexts(source, lower, byStart);
-    return result.contains('@') ? _hideAddresses(result) : result;
+    if (result.contains('@')) result = _hideAddresses(result);
+    return '$result$tail';
   }
 
-  /// the lower case texts of [mail] that fit in [max] letters, by their
-  /// first 3 letters
-  static Map<int, _Texts> _secrets(Map<String, Object?> mail, int max) {
+  /// the trimmed, lower case texts of [mail], 3 letters or more
+  static List<String> _secrets(Map<String, Object?> mail) {
     List<String> texts = <String>[];
     _collect(mail, texts);
+    return <String>[
+      for (String value in texts)
+        if (value.trim().length >= 3) value.trim().toLowerCase(),
+    ];
+  }
+
+  /// the [secrets] that fit in [max] letters, by their first 3 letters
+  static Map<int, _Texts> _byStart(List<String> secrets, int max) {
     Map<int, _Texts> byStart = <int, _Texts>{};
-    for (String value in texts) {
-      String secret = value.trim().toLowerCase();
-      if (secret.length < 3 || secret.length > max) continue;
+    for (String secret in secrets) {
+      if (secret.length > max) continue;
       byStart.putIfAbsent(_key(secret, 0), _Texts.new).add(secret);
     }
     return byStart;
+  }
+
+  /// the first place where a whole-word text of [secrets] starts at the
+  /// end of the cut [lower] text and goes past the cut, or null
+  static int? _cutStart(String lower, List<String> secrets) {
+    int? first;
+    for (String needle in secrets) {
+      int from = lower.length - needle.length + 1;
+      if (from < 0) from = 0;
+      // find the start with a short head of the text, then check the rest
+      String head = needle.length > 16 ? needle.substring(0, 16) : needle;
+      int last = lower.length - head.length;
+      int at = lower.indexOf(head, from);
+      while (at >= 0 && at <= last && !_startsAt(lower, needle, at)) {
+        at = lower.indexOf(head, at + 1);
+      }
+      if (at < 0 || at > last) {
+        at = -1;
+        for (int i = last + 1 > from ? last + 1 : from; i < lower.length; i++) {
+          if (_startsAt(lower, needle, i)) {
+            at = i;
+            break;
+          }
+        }
+      }
+      if (at >= 0 && (first == null || at < first)) first = at;
+    }
+    return first;
+  }
+
+  /// true when the end of [lower] from [at] is the start of [needle], at
+  /// the start of a word
+  static bool _startsAt(String lower, String needle, int at) {
+    if (_isWord(needle, 0) && _isWord(lower, at - 1)) return false;
+    return needle.startsWith(lower.substring(at));
   }
 
   /// the first 3 code units of [text] at [at], as one number
@@ -175,12 +239,13 @@ class RedactedMailError implements Exception {
     String lower,
     Map<int, _Texts> byStart,
   ) {
+    _Hash hash = _Hash(lower);
     StringBuffer out = StringBuffer();
     int start = 0;
     int at = 0;
     while (at + 3 <= lower.length) {
       _Texts? texts = byStart[_key(lower, at)];
-      int? length = texts?.longestAt(lower, at);
+      int? length = texts?.longestAt(lower, hash, at);
       if (length == null) {
         at++;
         continue;
@@ -235,18 +300,43 @@ class RedactedMailError implements Exception {
         c >= 0x80;
   }
 
-  /// every text in [value], but not the file bytes, content types and tags
-  static void _collect(Object? value, List<String> into, [String? key]) {
-    if (key == 'bytes' || key == 'contentType' || key == 'tags') return;
+  /// every text of [mail] (from `Message.toJson()`), with the names of
+  /// the headers and the keys of the metadata, but not the tags and the
+  /// file bytes and content types
+  static void _collect(Map<String, Object?> mail, List<String> into) {
+    for (MapEntry<String, Object?> entry in mail.entries) {
+      Object? value = entry.value;
+      switch (entry.key) {
+        case 'tags':
+          break;
+        case 'attachments':
+          for (Object? file in value is List ? value : const <Object?>[]) {
+            if (file is! Map) continue;
+            for (MapEntry<Object?, Object?> field in file.entries) {
+              if (field.key == 'bytes' || field.key == 'contentType') continue;
+              _add(field.value, into);
+            }
+          }
+        case 'headers' || 'metadata':
+          if (value is Map) _add(value.keys.toList(), into);
+          _add(value, into);
+        default:
+          _add(value, into);
+      }
+    }
+  }
+
+  /// every text in [value], with the values of a map, not its keys
+  static void _add(Object? value, List<String> into) {
     if (value is String) {
       into.add(value);
     } else if (value is Map) {
-      for (MapEntry<Object?, Object?> entry in value.entries) {
-        _collect(entry.value, into, '${entry.key}');
+      for (Object? item in value.values) {
+        _add(item, into);
       }
     } else if (value is List) {
       for (Object? item in value) {
-        _collect(item, into);
+        _add(item, into);
       }
     }
   }
@@ -261,6 +351,7 @@ class RedactedMailError implements Exception {
 /// The texts of a mail that start with the same 3 letters, by length.
 class _Texts {
   final Map<int, Set<String>> _byLength = <int, Set<String>>{};
+  final Map<int, Set<int>> _hashes = <int, Set<int>>{};
   List<int> _lengths = <int>[];
 
   void add(String text) {
@@ -268,19 +359,23 @@ class _Texts {
     if (same == null) {
       same = <String>{};
       _byLength[text.length] = same;
+      _hashes[text.length] = <int>{};
       _lengths = <int>[..._lengths, text.length]..sort(_down);
     }
     same.add(text);
+    _hashes[text.length]!.add(_Hash(text).of(0, text.length));
   }
 
   static int _down(int a, int b) => b - a;
 
   /// the length of the longest text that is a whole word in [lower] at
-  /// [at], or null
-  int? longestAt(String lower, int at) {
+  /// [at], or null. The [hash] of [lower] skips most places without
+  /// copying the text, so many texts of the same start stay fast.
+  int? longestAt(String lower, _Hash hash, int at) {
     for (int length in _lengths) {
       int end = at + length;
       if (end > lower.length) continue;
+      if (!_hashes[length]!.contains(hash.of(at, end))) continue;
       String part = lower.substring(at, end);
       if (!_byLength[length]!.contains(part)) continue;
       if (RedactedMailError._isWord(part, 0) &&
@@ -294,6 +389,30 @@ class _Texts {
       return length;
     }
     return null;
+  }
+}
+
+/// A rolling hash of a text: the hash of any part in constant time.
+class _Hash {
+  _Hash(String text)
+    : _prefix = List<int>.filled(text.length + 1, 0),
+      _power = List<int>.filled(text.length + 1, 1) {
+    for (int i = 0; i < text.length; i++) {
+      _prefix[i + 1] = (_prefix[i] * _base + text.codeUnitAt(i)) % _mod;
+      _power[i + 1] = _power[i] * _base % _mod;
+    }
+  }
+
+  static const int _mod = 2147483647;
+  static const int _base = 131;
+
+  final List<int> _prefix;
+  final List<int> _power;
+
+  /// the hash of the part from [start] to [end]
+  int of(int start, int end) {
+    int value = (_prefix[end] - _prefix[start] * _power[end - start]) % _mod;
+    return value < 0 ? value + _mod : value;
   }
 }
 

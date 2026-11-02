@@ -1,7 +1,8 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:dox_mailer/dox_mailer.dart';
-import 'package:dox_queue/src/send_queued_mail.dart';
+import 'package:dox_queue/dox_queue.dart';
 import 'package:test/test.dart';
 
 /// an error whose text can not be made, so the redaction fails
@@ -12,13 +13,22 @@ class BadTextError extends MailException {
   String toString() => throw StateError('no text');
 }
 
-Map<String, Object?> _mail({String body = 'Hi Ann', List<String>? tags}) {
+Map<String, Object?> _mail({
+  String body = 'Hi Ann',
+  List<String>? tags,
+  Map<String, String>? headers,
+  Map<String, String>? metadata,
+  List<Attachment>? attachments,
+}) {
   return Message(
     from: const Address('app@example.com', 'App'),
     to: <Address>[const Address('ann@example.com', 'Ann')],
     subject: 'Your reset code',
     text: body,
     tags: tags ?? <String>[],
+    headers: headers ?? <String, String>{},
+    metadata: metadata ?? <String, String>{},
+    attachments: attachments ?? <Attachment>[],
   ).toJson();
 }
 
@@ -41,7 +51,9 @@ void main() {
       expect(
         text,
         'RedactedMailError (code 552): '
-        'MailException: 552 message refused: ***',
+        'MailException: 552 message refused: *** '
+        '... (cut, ${'MailException: 552 message refused: $body'.length} '
+        'letters in all)',
       );
       expect(error.type, 'MailException');
     });
@@ -57,6 +69,67 @@ void main() {
       'RedactedMailError (code 550): '
           'MailException: 550 <***>: no mailbox',
     );
+  });
+
+  test('a 1 MB error is cut and redacted fast', () {
+    List<Attachment> files = <Attachment>[
+      for (int i = 0; i < 2000; i++)
+        Attachment(Uint8List(0), 'file-$i.pdf', contentType: 'text/plain'),
+    ];
+    String body = '${'a' * (200 * 1024)}b';
+    Stopwatch watch = Stopwatch()..start();
+    RedactedMailError error = RedactedMailError.of(
+      MailException('${'a' * (1024 * 1024)} ann@example.com'),
+      _mail(body: body, attachments: files),
+    );
+    watch.stop();
+    expect(watch.elapsedMilliseconds, lessThan(500));
+    expect(error.message.length, lessThan(RedactedMailError.maxLength + 100));
+    expect(error.message, endsWith('letters in all)'));
+  });
+
+  test('a mail text that goes past the cut is hidden up to the cut', () {
+    String body = 'Hi Ann, your reset code is 918273. ${'y' * 20000}';
+    RedactedMailError error = RedactedMailError.of(
+      MailException('refused: ${'z ' * 8000}$body'),
+      _mail(body: body),
+    );
+    expect(error.message, isNot(contains('918273')));
+    expect(error.message, isNot(contains('reset')));
+    expect(error.message, contains('z z *** ... (cut,'));
+  });
+
+  test('header names, metadata keys and their values are hidden', () {
+    RedactedMailError error = RedactedMailError.of(
+      MailException(
+        'bad X-Customer-Ref: 7781-secret, order-9912 = vip, '
+        'tags = gold-tier, bytes = blue-sky, contentType = top-plan',
+      ),
+      _mail(
+        headers: <String, String>{'X-Customer-Ref': '7781-secret'},
+        metadata: <String, String>{
+          'order-9912': 'vip',
+          'tags': 'gold-tier',
+          'bytes': 'blue-sky',
+          'contentType': 'top-plan',
+        },
+      ),
+    );
+    expect(
+      error.message,
+      'MailException: bad ***: ***, *** = ***, '
+      '*** = ***, *** = ***, *** = ***',
+    );
+  });
+
+  test('a file name is hidden, its content type is not', () {
+    RedactedMailError error = RedactedMailError.of(
+      MailException('bad file ann-invoice.pdf (application/pdf)'),
+      _mail(
+        attachments: <Attachment>[Attachment(Uint8List(0), 'ann-invoice.pdf')],
+      ),
+    );
+    expect(error.message, 'MailException: bad file *** (application/pdf)');
   });
 
   test('when the redaction fails, only the type and code are left', () {
@@ -124,8 +197,12 @@ void main() {
     );
     watch.stop();
     print('5 MB errors with no spaces: ${watch.elapsedMilliseconds} ms');
-    expect(plain.message.length, greaterThan(5 * 1024 * 1024));
-    expect(address.message, 'MailException: ***');
+    expect(
+      plain.message,
+      endsWith('(cut, ${5 * 1024 * 1024 + 15} letters in all)'),
+    );
+    expect(plain.message.length, lessThan(RedactedMailError.maxLength + 100));
+    expect(address.message, isNot(contains('@')));
     // generous, so CI is not flaky. Locally it is far less.
     expect(watch.elapsed, lessThan(const Duration(seconds: 5)));
   });

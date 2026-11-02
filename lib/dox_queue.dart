@@ -14,4 +14,5 @@ export 'src/queue_driver.dart';
 export 'src/queue_provider.dart';
 export 'src/queue_tables.dart';
 export 'src/queue_worker.dart';
+export 'src/send_queued_mail.dart' show RedactedMailError;
 export 'src/worker.dart';

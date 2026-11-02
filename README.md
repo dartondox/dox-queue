@@ -280,9 +280,18 @@ Deploy the worker together with the web app. An old worker does not know this jo
 With `encrypt: true`, a send error is logged and saved with `***` in place of:
 
 - every email address,
-- each whole text of the mail: names, subject, body, header and metadata values, file names.
+- each whole text of the mail: names, subject, body, header names and values, metadata keys and values, file names.
 
-The error type and the SMTP code stay. A part of a text, an encoded form (JSON, MIME, URL), or another Unicode form (eg. `Zoë` as NFC or NFD) may still show. Header names and metadata keys are not hidden, only their values. For strict needs, log only the error type and code.
+The error type and the SMTP code stay. Catch it as `RedactedMailError`: it has `type`, `message` and `statusCode`.
+
+Some mail data can still show:
+
+- A text shorter than 3 letters stays.
+- Tags are never hidden. They are labels like `smtp`, so hiding them would hide useful words.
+- A text is hidden only as a whole word. Text joined to other letters stays, eg. `code2` when the subject is `code`.
+- A part of a text, an encoded form (JSON, MIME, URL), or another Unicode form (eg. `Zoë` as NFC or NFD) is not found.
+
+An error longer than 16 KB is cut to its first 16 KB, and the text says it was cut. This keeps the worker fast. For strict needs, log only the error type and code.
 
 ## Run the worker
 
