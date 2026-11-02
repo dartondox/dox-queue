@@ -36,12 +36,15 @@ class QueueFake {
   void assertPushed<T extends DoxJob>([bool Function(T job)? test]) {
     List<T> jobs = jobsOf<T>();
     if (jobs.isEmpty) {
-      throw AssertionError('Expected a $T job to be pushed. ${_summary()}');
+      throw AssertionError(
+        'Expected ${_a('$T')} job to be pushed. ${_summary()}',
+      );
     }
     if (test != null && !jobs.any(test)) {
       throw AssertionError(
-        'Expected a $T job that passes the test to be pushed, but none of '
-        'the ${jobs.length} pushed $T jobs passed it.',
+        'Expected ${_a('$T')} job that passes the test to be pushed, but '
+        'none of the ${jobs.length} pushed $T ${_plural(jobs.length, 'job')} '
+        'passed it.',
       );
     }
   }
@@ -51,8 +54,8 @@ class QueueFake {
     int count = pushedOf<T>().length;
     if (count != times) {
       throw AssertionError(
-        'Expected $T to be pushed $times times, but it was pushed '
-        '$count times.',
+        'Expected $T to be pushed ${_times(times)}, but it was pushed '
+        '${_times(count)}.',
       );
     }
   }
@@ -62,7 +65,8 @@ class QueueFake {
     int count = pushedOf<T>().length;
     if (count > 0) {
       throw AssertionError(
-        'Expected no $T job to be pushed, but it was pushed $count times.',
+        'Expected no $T job to be pushed, but it was pushed '
+        '${_times(count)}.',
       );
     }
   }
@@ -81,6 +85,19 @@ class QueueFake {
     if (pushed.isEmpty) return 'No jobs were pushed.';
     String names = pushed.map(_name).join(', ');
     return 'Pushed: $names.';
+  }
+
+  /// `a SendWelcomeEmail`, `an AllTypesJob`
+  static String _a(String name) {
+    bool vowel = 'AEIOUaeiou'.contains(name.isEmpty ? 'x' : name[0]);
+    return vowel ? 'an $name' : 'a $name';
+  }
+
+  /// `1 time`, `2 times`
+  static String _times(int count) => '$count ${_plural(count, 'time')}';
+
+  static String _plural(int count, String word) {
+    return count == 1 ? word : '${word}s';
   }
 
   static String _name(PushedJob item) => '${item.job.runtimeType}';

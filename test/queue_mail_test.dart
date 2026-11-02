@@ -209,6 +209,10 @@ void main() {
         String log = await _logOf(_retryThenFail);
         String error = (await Queue.driver.failed()).single.error;
         for (String text in <String>[log, error]) {
+          // the encrypted details are random base64 text. About 1 in 300
+          // has "xxxx" in it by chance, and each run makes several. Check
+          // the text around them only.
+          text = text.replaceAll(_encrypted, 'Details are encrypted: ...');
           expect(text, isNot(contains('918273')));
           expect(text, isNot(contains('xxxx')));
           expect(text, contains('MailException (code 552). Details are'));
@@ -234,6 +238,9 @@ void main() {
     });
   }
 }
+
+/// the encrypted details of a [RedactedMailError] text
+final RegExp _encrypted = RegExp(r'Details are encrypted: [^\s"]+');
 
 /// two tries: the first is released, the second fails
 Future<void> _retryThenFail() async {
