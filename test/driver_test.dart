@@ -126,6 +126,44 @@ void main() {
         await driver.flush();
         expect(await driver.failed(), isEmpty);
       });
+
+      test('clear deletes the jobs of one queue', () async {
+        await driver.push(_payload('a'));
+        await driver.push(_payload('b'), delay: const Duration(minutes: 1));
+        await driver.push(_payload('c'));
+        await driver.pop('default');
+        await driver.push(_payload('d', queue: 'emails'));
+        // one ready, one delayed, one reserved
+        expect(await driver.clear('default'), 3);
+        expect(await driver.pop('default'), isNull);
+        expect(await driver.clear('default'), 0);
+        expect((await driver.pop('emails'))!.payload.id, 'd');
+      });
+
+      test('pruneFailed deletes the old failed jobs', () async {
+        await driver.push(_payload('a'));
+        await driver.fail((await driver.pop('default'))!, 'boom');
+        DateTime past = DateTime.now().subtract(const Duration(hours: 1));
+        expect(await driver.pruneFailed(past), 0);
+        expect(await driver.failed(), hasLength(1));
+        DateTime later = DateTime.now().add(const Duration(seconds: 1));
+        expect(await driver.pruneFailed(later), 1);
+        expect(await driver.failed(), isEmpty);
+      });
+
+      test('release saves the new exception count', () async {
+        await driver.push(_payload('a'));
+        ReservedJob job = (await driver.pop('default'))!;
+        ReservedJob next = ReservedJob(
+          job.payload.withExceptions(2),
+          attempts: job.attempts,
+          ref: job.ref,
+        );
+        await driver.release(next, Duration.zero);
+        ReservedJob again = (await driver.pop('default'))!;
+        expect(again.payload.exceptions, 2);
+        expect(again.attempts, 2);
+      });
     }, skip: store.skip);
   }
 }

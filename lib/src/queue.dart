@@ -26,10 +26,17 @@ class Queue {
   static QueueFake? _fake;
   static MailQueue? _mailQueueBeforeFake;
 
+  /// true when `Mail.fake()` was on at [fake]. Then [fake] and [restore]
+  /// leave the mail queue alone (see [fake]).
+  static bool _mailFakeWasOn = false;
+
   /// Keep dispatched jobs in a [QueueFake] and run or save none of them,
   /// so a test can check what was pushed. It needs no [configure]. It
   /// also catches `Mail.queue()` and `Mail.later()` of dox_mailer.
   /// [dispatchSync] still runs the job. [restore] undoes it.
+  ///
+  /// When `Mail.fake()` is already on, mails go to that fake, so this
+  /// does not change the mail queue. A `Mail.useQueue()` queue is kept.
   /// ```
   /// QueueFake queue = Queue.fake();
   /// await signUp('ann@example.com');
@@ -40,9 +47,14 @@ class Queue {
   static QueueFake fake() {
     QueueFake fake = QueueFake();
     // keep the mail queue set before the fake (a second fake() keeps the first)
-    if (_fake == null) _mailQueueBeforeFake = _currentMailQueue();
+    if (_fake == null) {
+      _mailFakeWasOn = _mailFakeOn();
+      _mailQueueBeforeFake = _mailFakeWasOn ? null : _currentMailQueue();
+    }
     _fake = fake;
-    Mail.useQueue(const QueueMailQueue());
+    // while Mail.fake() is on, Mail.mailQueue gives that fake, so the
+    // queue of Mail.useQueue() can not be read back: do not replace it
+    if (!_mailFakeWasOn) Mail.useQueue(const QueueMailQueue());
     return fake;
   }
 
@@ -52,21 +64,25 @@ class Queue {
   /// has no queue.
   static void restore() {
     MailQueue? before = _mailQueueBeforeFake;
+    bool keep = _mailFakeWasOn;
     _fake = null;
     _mailQueueBeforeFake = null;
+    _mailFakeWasOn = false;
+    if (keep) return;
     Mail.useQueue(before ?? (_config == null ? null : const QueueMailQueue()));
   }
 
-  /// the queue of `Mail.useQueue()`, or null. While `Mail.fake()` is on,
-  /// `Mail.mailQueue` gives that fake, which is not a queue to keep.
+  /// the queue of `Mail.useQueue()`, or null when there is none
   static MailQueue? _currentMailQueue() {
     try {
-      MailQueue queue = Mail.mailQueue;
-      return queue is ArrayTransport ? null : queue;
+      return Mail.mailQueue;
     } on StateError {
       return null;
     }
   }
+
+  /// `Mail.fake()` is on: `Mail.mailQueue` gives its [ArrayTransport]
+  static bool _mailFakeOn() => _currentMailQueue() is ArrayTransport;
 
   /// Use [config] in this isolate. `QueueProvider` calls it. Call it in
   /// tests, eg. with the `sync` driver.
@@ -96,13 +112,23 @@ class Queue {
   }
 
   /// Put [job] on the queue and return its id. [queue] wins over
-  /// `job.queue`. With a [delay], workers take it after the delay.
-  /// With the `sync` driver the job runs at once (no delay).
+  /// `job.queue`. With a [delay], workers take it after the delay. With
+  /// [delayUntil], workers take it at that time (a past time: at once).
+  /// Give [delay] or [delayUntil], not both. With the `sync` driver the
+  /// job runs at once (no delay).
   static Future<String> dispatch(
     DoxJob job, {
     Duration? delay,
     String? queue,
+    DateTime? delayUntil,
   }) async {
+    if (delayUntil != null) {
+      if (delay != null) {
+        throw ArgumentError('Give delay or delayUntil, not both.');
+      }
+      Duration wait = delayUntil.difference(DateTime.now());
+      delay = wait.isNegative ? Duration.zero : wait;
+    }
     QueueFake? fake = _fake;
     if (fake != null) {
       fake.pushed.add(PushedJob(job, queue: queue ?? job.queue, delay: delay));
@@ -122,6 +148,7 @@ class Queue {
       job: codec.name,
       queue: queue ?? job.queue,
       data: data,
+      retryUntil: job.retryUntil?.millisecondsSinceEpoch,
     );
     await driver.push(payload, delay: delay ?? Duration.zero);
     return id;

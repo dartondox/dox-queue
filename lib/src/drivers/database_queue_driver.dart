@@ -113,10 +113,11 @@ class DatabaseQueueDriver extends QueueDriver {
   @override
   Future<void> release(ReservedJob job, Duration delay) async {
     await _db.execute(
-      'UPDATE $jobsTable SET reserved_at = NULL, available_at = @at '
-      'WHERE id = @id',
+      'UPDATE $jobsTable SET reserved_at = NULL, available_at = @at, '
+      'payload = @payload WHERE id = @id',
       substitutionValues: <String, dynamic>{
         'at': QueueDriver.now() + delay.inMilliseconds,
+        'payload': job.payload.encode(),
         'id': job.ref,
       },
     );
@@ -177,6 +178,37 @@ class DatabaseQueueDriver extends QueueDriver {
   @override
   Future<void> flush() async {
     await _db.execute('DELETE FROM $failedTable');
+  }
+
+  @override
+  Future<int> clear(String queue) {
+    return _deleteWhere(jobsTable, 'queue = @value', queue);
+  }
+
+  @override
+  Future<int> pruneFailed(DateTime before) {
+    return _deleteWhere(
+      failedTable,
+      'failed_at < @value',
+      before.millisecondsSinceEpoch,
+    );
+  }
+
+  /// delete the rows of [table] that match [where], and count them
+  Future<int> _deleteWhere(String table, String where, Object value) {
+    DBDriver db = _db;
+    Map<String, dynamic> values = <String, dynamic>{'value': value};
+    return db.transaction(() async {
+      List<Map<String, dynamic>> rows = await db.query(
+        'SELECT COUNT(*) AS total FROM $table WHERE $where',
+        substitutionValues: values,
+      );
+      await db.execute(
+        'DELETE FROM $table WHERE $where',
+        substitutionValues: values,
+      );
+      return _int(rows.first['total']);
+    });
   }
 
   Future<FailedJob?> _find(DBDriver db, String id) async {

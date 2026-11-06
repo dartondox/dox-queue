@@ -87,15 +87,16 @@ class QueueFake {
     return 'Pushed: $names.';
   }
 
-  /// `a SendWelcomeEmail`, `an AllTypesJob`, `a UserJob`. A vowel gives
-  /// "an", but "U" + consonant + vowel (User, Uni) and "Eu" sound like
-  /// "you", so they give "a".
+  /// names that start with a "you" sound: "Eu", "Uni", and "U" + one
+  /// consonant (not "n") + vowel, like User. Unused gives "an".
   // ponytail: a small rule, not a full English dictionary (hour, honest)
   static final RegExp _youSound = RegExp(
-    '^(eu|u[^aeiou][aeiou])',
+    '^(eu|uni|u[^aeioun][aeiou])',
     caseSensitive: false,
   );
 
+  /// `a SendWelcomeEmail`, `an AllTypesJob`, `a UserJob`, `an UnusedJob`.
+  /// A vowel gives "an", but a "you" sound ([_youSound]) gives "a".
   static String _a(String name) {
     bool vowel = 'AEIOUaeiou'.contains(name.isEmpty ? 'x' : name[0]);
     return vowel && !_youSound.hasMatch(name) ? 'an $name' : 'a $name';

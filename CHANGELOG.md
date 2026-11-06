@@ -1,5 +1,15 @@
 ## Unreleased
 
+- New opt-in job settings: `retryUntil` (retry until a time, not `tries` times), `maxExceptions` (fail after this many tries that threw) and `failOnTimeout` (fail at once on a timeout). Jobs without them work as before. `retryUntil` is read once at dispatch and saved with the job. Rows saved before this change are read as jobs with no `retryUntil`.
+- New: `dispatch(delayUntil: DateTime)` waits until a time. `delay: Duration` still works. Give one of them, not both.
+- New: `dispatchIf(condition)` and `dispatchUnless(condition)`. They return the job id, or null when the job was not dispatched.
+- New worker flags: `--backoff=SECONDS[,SECONDS...]` (the retry wait of a job with no `backoff`), `--max-jobs=N`, `--max-time=SECONDS` and `--memory=MB` (stop the worker after the running jobs). All are off by default.
+- New commands of `bin/queue.dart`: `clear [queue]` deletes the jobs of a queue. `restart` makes the running workers stop after their current jobs (it writes a time to the app cache, so the workers must share one cache store). `prune-failed --hours=N` deletes failed jobs older than N hours (default 24).
+- New `QueueDriver.clear()` and `QueueDriver.pruneFailed()`. The Redis and database drivers have them. A custom driver that does not override them throws an `UnsupportedError`.
+- `QueueDriver.release()` now also saves `job.payload`, so the worker can keep the exception count. A custom driver should save it too.
+- Fix: the `QueueFake` messages said "a UnusedJob". Now only "Uni" and "U" + one consonant (not "n") + vowel give "a", so it says "an UnusedJob" and still "a UniJob".
+- Fix: when `Mail.fake()` was on before `Queue.fake()`, `Queue.restore()` lost a queue set with `Mail.useQueue()`. Now `Queue.fake()` does not touch the mail queue while `Mail.fake()` is on.
+
 - Fix: the `QueueFake` check messages had bad grammar, like "a AllTypesJob" and "1 times". Now they say "an AllTypesJob" and "1 time". A name that starts with a "you" sound (like `UserJob` or `EuJob`) gets "a".
 - Fix: `Queue.restore()` did not undo the `Mail.useQueue()` call of `Queue.fake()`. With no `Queue.configure()`, `Mail.queue()` still found a queue after the test. Now `restore()` puts back the queue it had before `Queue.fake()` (also one from `Mail.useQueue()`). If it had none: no queue, or this queue when `Queue.configure()` was called.
 - New: `Queue.fake()` for tests. It keeps every dispatched job in a `QueueFake` and does not run or save them. Check them with `assertPushed<T>([test])`, `assertPushedTimes<T>(n)`, `assertNotPushed<T>()` and `assertNothingPushed()`. Read them with `pushed` (each has the job, the queue name and the delay) or `jobsOf<T>()`. It also catches `Mail.queue()` and `Mail.later()`. `dispatchSync()` still runs the job. `Queue.restore()` stops the fake.

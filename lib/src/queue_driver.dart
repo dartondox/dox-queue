@@ -10,6 +10,8 @@ class JobPayload {
     required this.queue,
     required this.data,
     this.attempts = 0,
+    this.retryUntil,
+    this.exceptions = 0,
   });
 
   /// a random id, like `0f3c...`
@@ -25,6 +27,13 @@ class JobPayload {
 
   /// how many times a worker took the job
   final int attempts;
+
+  /// `DoxJob.retryUntil` as unix time in milliseconds, read once at
+  /// dispatch. Null: the job has none (also for jobs saved before it).
+  final int? retryUntil;
+
+  /// how many tries threw an error, for `DoxJob.maxExceptions`
+  final int exceptions;
 
   /// a new random id: 16 random bytes as hex
   static String newId() {
@@ -44,9 +53,26 @@ class JobPayload {
       queue: queue,
       data: data,
       attempts: attempts,
+      retryUntil: retryUntil,
+      exceptions: exceptions,
     );
   }
 
+  /// a copy with other [exceptions]
+  JobPayload withExceptions(int exceptions) {
+    return JobPayload(
+      id: id,
+      job: job,
+      queue: queue,
+      data: data,
+      attempts: attempts,
+      retryUntil: retryUntil,
+      exceptions: exceptions,
+    );
+  }
+
+  /// [retryUntil] and [exceptions] are left out when not set, so the
+  /// text of a job with neither is the same as before they existed
   String encode() {
     return jsonEncode(<String, Object?>{
       'id': id,
@@ -54,6 +80,8 @@ class JobPayload {
       'queue': queue,
       'data': data,
       'attempts': attempts,
+      'retryUntil': ?retryUntil,
+      if (exceptions > 0) 'exceptions': exceptions,
     });
   }
 
@@ -65,6 +93,8 @@ class JobPayload {
       queue: map['queue'] as String,
       data: map['data'] as String,
       attempts: (map['attempts'] as num? ?? 0).toInt(),
+      retryUntil: (map['retryUntil'] as num?)?.toInt(),
+      exceptions: (map['exceptions'] as num? ?? 0).toInt(),
     );
   }
 }
@@ -121,7 +151,8 @@ abstract class QueueDriver {
   /// the job is done: remove it
   Future<void> delete(ReservedJob job);
 
-  /// try the job again after [delay]
+  /// try the job again after [delay]. Save `job.payload` as it is now:
+  /// the worker can give it a new `exceptions` count.
   Future<void> release(ReservedJob job, Duration delay);
 
   /// the job failed all its tries: move it to the failed jobs
@@ -138,6 +169,20 @@ abstract class QueueDriver {
 
   /// delete all failed jobs
   Future<void> flush();
+
+  /// Delete every job of [queue] that is waiting, delayed or reserved.
+  /// Returns how many were deleted. Failed jobs stay. The built-in
+  /// drivers have it, a custom driver throws an [UnsupportedError].
+  Future<int> clear(String queue) {
+    throw UnsupportedError('$runtimeType can not clear a queue');
+  }
+
+  /// Delete the failed jobs that failed before [before]. Returns how
+  /// many were deleted. The built-in drivers have it, a custom driver
+  /// throws an [UnsupportedError].
+  Future<int> pruneFailed(DateTime before) {
+    throw UnsupportedError('$runtimeType can not prune failed jobs');
+  }
 
   /// close the connection
   Future<void> close() async {}

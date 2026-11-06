@@ -17,11 +17,17 @@ import 'worker.dart';
 /// http server. Then it runs one command:
 /// - `work` (default): run jobs. Flags: `--queue=a,b`,
 ///   `--concurrency=N`, `--once`, `--tries=N`, `--timeout=SECONDS`,
-///   `--sleep=SECONDS`, `--stop-when-empty`, `--timeout-grace=SECONDS`.
+///   `--sleep=SECONDS`, `--stop-when-empty`, `--timeout-grace=SECONDS`,
+///   `--backoff=SECONDS[,SECONDS...]`, `--max-jobs=N`,
+///   `--max-time=SECONDS`, `--memory=MB`.
 /// - `failed`: list the failed jobs.
 /// - `retry <id|all>`: put failed jobs back on their queue.
 /// - `forget <id>`: delete one failed job.
 /// - `flush`: delete all failed jobs.
+/// - `clear [queue]`: delete the jobs of a queue (default: `default`).
+/// - `restart`: tell the running workers to stop after their current
+///   jobs, so the process manager starts them with the new code.
+/// - `prune-failed`: delete failed jobs older than `--hours=N` (24).
 ///
 /// SIGINT (Ctrl+C) and SIGTERM stop the worker gracefully: it takes no
 /// new job and waits for the running jobs. A second signal stops it at
@@ -35,6 +41,15 @@ class QueueWorker {
   /// then does not start the in-process worker.
   static bool active = false;
 
+  /// The cache key of `restart`. A worker reads it when it starts, and
+  /// stops when the value changes. It uses the default cache store of
+  /// the app, so all workers must share it (eg. `file` on one machine,
+  /// or `redis`). The `memory` store does not work for it.
+  static const String restartKey = 'dox_queue:restart';
+
+  /// how often a running worker reads [restartKey]
+  static const Duration restartCheck = Duration(seconds: 3);
+
   static const String usage = '''
 Usage: dart run bin/queue.dart <command> [flags]
 
@@ -44,6 +59,9 @@ Commands:
   retry <id|all>    put failed jobs back on their queue
   forget <id>       delete one failed job
   flush             delete all failed jobs
+  clear [queue]     delete the jobs of a queue (default: default)
+  restart           stop the running workers after their current jobs
+  prune-failed      delete failed jobs older than --hours=N (default: 24)
 
 Flags of work:
   --queue=a,b         the queues to work, first one first (default: default)
@@ -55,7 +73,13 @@ Flags of work:
   --stop-when-empty   stop when the queues are empty
   --timeout-grace=SECONDS
                       after a timeout, wait up to this long for the old run
-                      to end before the next try (default: no wait)''';
+                      to end before the next try (default: no wait)
+  --backoff=SECONDS[,SECONDS...]
+                      the wait before a retry of a job with no backoff
+                      (default: retry at once)
+  --max-jobs=N        stop after N jobs (default: no limit)
+  --max-time=SECONDS  stop after this time (default: no limit)
+  --memory=MB         stop when the process uses more memory (default: no limit)''';
 
   /// Run the command of [args]. Returns the exit code: 0 for success.
   Future<int> run(List<String> args) async {
@@ -101,6 +125,22 @@ Flags of work:
         await Queue.driver.flush();
         stdout.writeln('Deleted all failed jobs.');
         return 0;
+      case 'clear':
+        String queue = command.argument.isEmpty ? 'default' : command.argument;
+        int count = await Queue.driver.clear(queue);
+        stdout.writeln('Deleted $count jobs of the $queue queue.');
+        return 0;
+      case 'restart':
+        await Cache().forever(restartKey, DateTime.now().toIso8601String());
+        stdout.writeln('The workers stop after their current jobs.');
+        return 0;
+      case 'prune-failed':
+        DateTime before = DateTime.now().subtract(
+          Duration(hours: command.hours),
+        );
+        int count = await Queue.driver.pruneFailed(before);
+        stdout.writeln('Deleted $count failed jobs.');
+        return 0;
     }
     return 64;
   }
@@ -130,6 +170,34 @@ Flags of work:
       worker.stop();
     }
 
+    // `restart` changes the key: stop like on a signal
+    Object? restartedAt;
+    bool canRestart = true;
+    try {
+      restartedAt = await Cache().get(restartKey);
+    } catch (error) {
+      canRestart = false;
+      Logger.warn('Queue: no `restart`, the cache can not be read: $error');
+    }
+    bool checking = false;
+    Future<void> checkRestart(Timer timer) async {
+      if (checking) return;
+      checking = true;
+      try {
+        if (await Cache().get(restartKey) == restartedAt) return;
+      } catch (_) {
+        return; // a cache error is not a restart, try again next time
+      } finally {
+        checking = false;
+      }
+      Logger.info('Queue: restart, stopping after the running jobs');
+      timer.cancel();
+      worker.stop();
+    }
+
+    Timer? restart = canRestart
+        ? Timer.periodic(restartCheck, checkRestart)
+        : null;
     signals.add(ProcessSignal.sigint.watch().listen(onSignal));
     // Windows can not watch SIGTERM
     if (!Platform.isWindows) {
@@ -140,6 +208,7 @@ Flags of work:
       '(${Queue.config.driver}, concurrency ${options.concurrency})',
     );
     await worker.run();
+    restart?.cancel();
     for (StreamSubscription<ProcessSignal> s in signals) {
       await s.cancel();
     }
@@ -207,14 +276,18 @@ Flags of work:
 
 /// A parsed `bin/queue.dart` command line.
 class QueueCommand {
-  QueueCommand(this.name, this.argument, this.options);
+  QueueCommand(this.name, this.argument, this.options, {this.hours = 24});
 
-  /// `work`, `failed`, `retry`, `forget` or `flush`
+  /// `work`, `failed`, `retry`, `forget`, `flush`, `clear`, `restart` or
+  /// `prune-failed`
   final String name;
 
-  /// the id of `retry` and `forget`
+  /// the id of `retry` and `forget`, the queue of `clear`
   final String argument;
   final WorkerOptions options;
+
+  /// `--hours` of `prune-failed`
+  final int hours;
 
   static const List<String> _commands = <String>[
     'work',
@@ -222,6 +295,9 @@ class QueueCommand {
     'retry',
     'forget',
     'flush',
+    'clear',
+    'restart',
+    'prune-failed',
   ];
 
   /// Throws a [FormatException] with a clear message for a bad command
@@ -264,8 +340,29 @@ class QueueCommand {
         sleep: Duration(seconds: _int(flags, 'sleep') ?? 3),
         stopWhenEmpty: flags.containsKey('stop-when-empty'),
         timeoutGrace: _seconds(flags, 'timeout-grace'),
+        backoff: _backoff(flags['backoff']),
+        maxJobs: _int(flags, 'max-jobs'),
+        maxTime: _seconds(flags, 'max-time'),
+        memory: _int(flags, 'memory'),
       ),
+      hours: _int(flags, 'hours') ?? 24,
     );
+  }
+
+  /// `--backoff=1,5,10`: seconds, one entry per retry
+  static List<Duration> _backoff(String? value) {
+    if (value == null) return const <Duration>[];
+    List<Duration> waits = <Duration>[];
+    for (String part in value.split(',')) {
+      int? seconds = int.tryParse(part.trim());
+      if (seconds == null || seconds < 0) {
+        throw FormatException(
+          '--backoff needs seconds of 0 or more, eg. 1,5,10',
+        );
+      }
+      waits.add(Duration(seconds: seconds));
+    }
+    return waits;
   }
 
   static const List<String> _flags = <String>[
@@ -277,6 +374,11 @@ class QueueCommand {
     'sleep',
     'stop-when-empty',
     'timeout-grace',
+    'backoff',
+    'max-jobs',
+    'max-time',
+    'memory',
+    'hours',
   ];
 
   static String _trim(String value) => value.trim();
@@ -292,7 +394,16 @@ class QueueCommand {
     String? value = flags[key];
     if (value == null) return null;
     int? number = int.tryParse(value);
-    int min = key == 'concurrency' || key == 'tries' ? 1 : 0;
+    int min =
+        const <String>[
+          'concurrency',
+          'tries',
+          'max-jobs',
+          'memory',
+          'max-time',
+        ].contains(key)
+        ? 1
+        : 0;
     if (number == null || number < min) {
       throw FormatException('--$key needs a number of $min or more');
     }
