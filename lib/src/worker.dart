@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show ProcessInfo;
 
 import 'job.dart';
 import 'job_registry.dart';
@@ -18,6 +19,10 @@ class WorkerOptions {
     this.sleep = const Duration(seconds: 3),
     this.stopWhenEmpty = false,
     this.timeoutGrace,
+    this.backoff = const <Duration>[],
+    this.maxJobs,
+    this.maxTime,
+    this.memory,
   });
 
   /// the queues to work, first one first (`--queue=high,default`)
@@ -52,6 +57,22 @@ class WorkerOptions {
   /// another worker can take the job again while this one waits.
   /// Null (the default): no wait, the retry can start at once.
   final Duration? timeoutGrace;
+
+  /// the wait before each retry of a job with no `backoff` of its own
+  /// (`--backoff=10` or `--backoff=1,5,10`, in seconds). The last entry
+  /// is used for the rest. Empty (the default): retry at once.
+  final List<Duration> backoff;
+
+  /// stop after this many jobs (`--max-jobs=1000`). Null: no limit.
+  final int? maxJobs;
+
+  /// stop after this time (`--max-time=3600`). The running jobs end
+  /// first. Null: no limit.
+  final Duration? maxTime;
+
+  /// stop after a job when the process uses more than this many MB of
+  /// memory (`--memory=256`). Null: no limit.
+  final int? memory;
 }
 
 /// Takes jobs from the queue and runs them. A job that throws is tried
@@ -73,11 +94,23 @@ class Worker {
   /// completes on [stop], to end a sleep early
   final Completer<void> _wake = Completer<void>();
 
+  /// how many jobs this worker ran, for [WorkerOptions.maxJobs]
+  int _done = 0;
+
   /// Work until [stop], or until the queues are empty with
-  /// `stopWhenEmpty`, or after one job with `once`.
+  /// `stopWhenEmpty`, or after one job with `once`, or until a limit of
+  /// `maxJobs`, `maxTime` or `memory` is hit.
   Future<void> run() async {
     int loops = options.once ? 1 : options.concurrency;
+    Duration? maxTime = options.maxTime;
+    Timer? timer = maxTime == null ? null : Timer(maxTime, _timeIsUp);
     await Future.wait(<Future<void>>[for (int i = 0; i < loops; i++) _loop()]);
+    timer?.cancel();
+  }
+
+  void _timeIsUp() {
+    QueueLog.info('Queue: max time ${options.maxTime} reached, stopping');
+    stop();
   }
 
   /// Stop taking jobs. [run] ends when the running jobs are done.
@@ -107,6 +140,22 @@ class Worker {
         QueueLog.danger('Queue: ${job.payload.job} error: $error', '$stack');
       }
       if (options.once) return;
+      _checkLimits();
+    }
+  }
+
+  /// stop on [WorkerOptions.maxJobs] or [WorkerOptions.memory]
+  void _checkLimits() {
+    _done++;
+    int? maxJobs = options.maxJobs;
+    if (maxJobs != null && _done >= maxJobs && !_stopping) {
+      QueueLog.info('Queue: ran $_done jobs (max $maxJobs), stopping');
+      stop();
+    }
+    int? memory = options.memory;
+    if (memory != null && ProcessInfo.currentRss > memory * 1024 * 1024) {
+      QueueLog.info('Queue: memory is over $memory MB, stopping');
+      stop();
     }
   }
 
@@ -140,12 +189,16 @@ class Worker {
       return;
     }
     int tries = job.tries ?? options.tries;
-    if (reserved.attempts > tries) {
+    if (reserved.attempts > 1 &&
+        _noTryLeft(job, payload, reserved.attempts - 1)) {
       // a worker took it before and did not finish (it crashed or the
-      // reservation timed out)
+      // reservation timed out), or its retryUntil time passed
       StateError error = StateError(
-        '$label was tried ${reserved.attempts - 1} times and did not finish. '
-        'The worker may have crashed, or the job ran longer than retryAfter.',
+        payload.retryUntil != null
+            ? '$label is past its retryUntil time.'
+            : '$label was tried ${reserved.attempts - 1} times and did not '
+                  'finish. The worker may have crashed, or the job ran '
+                  'longer than retryAfter.',
       );
       await _fail(reserved, job, label, error, StackTrace.current);
       return;
@@ -159,20 +212,33 @@ class Worker {
       await run.timeout(timeout);
     } catch (error, stack) {
       Object reason = error;
-      if (error is TimeoutException) {
+      bool timedOut = error is TimeoutException;
+      int exceptions = payload.exceptions;
+      if (timedOut) {
         reason = TimeoutException('$label timed out after $timeout', timeout);
         if (run != null) await _waitForTimedOutRun(run, label);
+      } else {
+        exceptions++;
       }
-      if (reserved.attempts >= tries) {
-        await _fail(reserved, job, label, reason, stack);
+      ReservedJob next = ReservedJob(
+        payload.withExceptions(exceptions),
+        attempts: reserved.attempts,
+        ref: reserved.ref,
+      );
+      int? maxExceptions = job.maxExceptions;
+      if ((timedOut && job.failOnTimeout) ||
+          (maxExceptions != null && exceptions >= maxExceptions) ||
+          _noTryLeft(job, payload, reserved.attempts)) {
+        await _fail(next, job, label, reason, stack);
         return;
       }
-      Duration wait = backoffFor(job, reserved.attempts);
+      Duration wait = backoffFor(job, reserved.attempts, options.backoff);
+      String of = payload.retryUntil == null ? ' of $tries' : '';
       QueueLog.warn(
-        'Queue: $label failed try ${reserved.attempts} of $tries, '
+        'Queue: $label failed try ${reserved.attempts}$of, '
         'next try in $wait: $reason',
       );
-      await driver.release(reserved, wait);
+      await driver.release(next, wait);
       return;
     }
     await driver.delete(reserved);
@@ -200,9 +266,22 @@ class Worker {
   static bool _endedWithError(Object _) => true;
   static bool _stillRunning() => false;
 
-  /// the wait before the next try, after try number [attempts]
-  static Duration backoffFor(DoxJob job, int attempts) {
-    List<Duration> backoff = job.backoff;
+  /// No try is left after try number [attempts]: the time of
+  /// `retryUntil` has passed, or else all `tries` are used.
+  bool _noTryLeft(DoxJob job, JobPayload payload, int attempts) {
+    int? until = payload.retryUntil;
+    if (until != null) return QueueDriver.now() >= until;
+    return attempts >= (job.tries ?? options.tries);
+  }
+
+  /// the wait before the next try, after try number [attempts]. A job
+  /// with no `backoff` uses [fallback] (the worker `--backoff`).
+  static Duration backoffFor(
+    DoxJob job,
+    int attempts, [
+    List<Duration> fallback = const <Duration>[],
+  ]) {
+    List<Duration> backoff = job.backoff.isEmpty ? fallback : job.backoff;
     if (backoff.isEmpty) return Duration.zero;
     int index = attempts - 1;
     return backoff[index < backoff.length ? index : backoff.length - 1];

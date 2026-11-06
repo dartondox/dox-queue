@@ -49,10 +49,11 @@ local reserved = cjson.encode(decoded)
 redis.call('ZADD', KEYS[3], ARGV[2], reserved)
 return reserved''';
 
-  /// Moves a reserved job to the delayed set.
+  /// Moves a reserved job to the delayed set, as the new text ARGV[3]
+  /// (it can have a new exception count).
   static const String _releaseScript = '''
 redis.call('ZREM', KEYS[1], ARGV[1])
-redis.call('ZADD', KEYS[2], ARGV[2], ARGV[1])
+redis.call('ZADD', KEYS[2], ARGV[2], ARGV[3])
 return 1''';
 
   String _list(String queue) => '${prefix}queue:$queue';
@@ -106,6 +107,7 @@ return 1''';
       _delayed(queue),
       job.ref,
       QueueDriver.now() + delay.inMilliseconds,
+      job.payload.encode(),
     ]);
   }
 
@@ -153,6 +155,34 @@ return 1''';
   @override
   Future<void> flush() async {
     await redis.del(_failed);
+  }
+
+  /// counts the jobs of the three keys of a queue, then deletes them
+  static const String _clearScript = '''
+local total = redis.call('LLEN', KEYS[1])
+  + redis.call('ZCARD', KEYS[2])
+  + redis.call('ZCARD', KEYS[3])
+redis.call('DEL', KEYS[1], KEYS[2], KEYS[3])
+return total''';
+
+  @override
+  Future<int> clear(String queue) async {
+    Object? total = await redis.eval(_clearScript, 3, <Object>[
+      _list(queue),
+      _delayed(queue),
+      _reserved(queue),
+    ]);
+    return int.parse('$total');
+  }
+
+  @override
+  Future<int> pruneFailed(DateTime before) async {
+    List<String> ids = <String>[
+      for (FailedJob job in await failed())
+        if (job.failedAt.isBefore(before)) job.id,
+    ];
+    if (ids.isNotEmpty) await redis.hdel(_failed, ids);
+    return ids.length;
   }
 
   /// close the connection and the pool, with no reconnect

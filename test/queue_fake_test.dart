@@ -34,6 +34,11 @@ class UploadJob extends DoxJob {
   Future<void> handle() async {}
 }
 
+class UnusedJob extends DoxJob {
+  @override
+  Future<void> handle() async {}
+}
+
 class OrderJob extends DoxJob {
   @override
   Future<void> handle() async {}
@@ -49,6 +54,8 @@ class _CustomQueue implements MailQueue {
     bool encrypt = false,
   }) async => 'id';
 }
+
+void _noMailQueue() => Mail.useQueue(null);
 
 bool _isUser2(SendWelcomeEmail job) => job.userId == 2;
 
@@ -192,6 +199,10 @@ void main() {
       startsWith('Expected an UploadJob job'),
     );
     expect(
+      _failure(queue.assertPushed<UnusedJob>),
+      startsWith('Expected an UnusedJob job'),
+    );
+    expect(
       _failure(queue.assertPushed<OrderJob>),
       startsWith('Expected an OrderJob job'),
     );
@@ -201,10 +212,23 @@ void main() {
     Queue.restore();
     _CustomQueue custom = _CustomQueue();
     Mail.useQueue(custom);
+    addTearDown(_noMailQueue);
     Queue.fake();
     expect(Mail.mailQueue, isNot(same(custom)));
     Queue.restore();
     expect(Mail.mailQueue, same(custom));
-    Mail.useQueue(null);
+  });
+
+  test('keeps a Mail.useQueue() when Mail.fake() was on first', () {
+    Queue.restore();
+    _CustomQueue custom = _CustomQueue();
+    Mail.useQueue(custom);
+    addTearDown(_noMailQueue);
+    Mail.fake();
+    addTearDown(Mail.restore);
+    Queue.fake();
+    Queue.restore();
+    Mail.restore();
+    expect(Mail.mailQueue, same(custom));
   });
 }

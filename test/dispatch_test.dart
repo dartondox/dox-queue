@@ -186,6 +186,54 @@ void main() {
       expect(await Queue.driver.failed(), isEmpty);
     });
 
+    test('clear and prune-failed', () async {
+      Queue.configure(config);
+      await SendWelcomeEmail(userId: 1).dispatch();
+      await SendWelcomeEmail(userId: 2).dispatch(queue: 'emails');
+      await FlakyJob(
+        key: 'p',
+        failTimes: 9,
+        maxTries: 1,
+      ).dispatch(queue: 'flaky');
+      expect(await run(<String>['work', '--queue=flaky', '--once']), 0);
+      expect(await run(<String>['clear']), 0);
+      Queue.configure(config);
+      expect(await Queue.driver.pop('default'), isNull);
+      expect(await Queue.driver.pop('emails'), isNotNull);
+      expect(await run(<String>['clear', 'emails']), 0);
+      Queue.configure(config);
+      expect(await Queue.driver.pop('emails'), isNull);
+      // the failed job is new: 1 hour keeps it, 0 hours deletes it
+      expect(await run(<String>['prune-failed', '--hours=1']), 0);
+      Queue.configure(config);
+      expect(await Queue.driver.failed(), hasLength(1));
+      expect(await run(<String>['prune-failed', '--hours=0']), 0);
+      Queue.configure(config);
+      expect(await Queue.driver.failed(), isEmpty);
+    });
+
+    test('restart stops a running worker', () async {
+      // a memory cache, so the test writes no files
+      Dox().cache = CacheManager(
+        const CacheConfig(
+          defaultStore: 'memory',
+          stores: <String, Map<String, dynamic>>{
+            'memory': <String, dynamic>{'driver': 'memory'},
+          },
+        ),
+      );
+      Future<int> worker = run(<String>['work']);
+      await _wait(500);
+      // like `restart` from another process: the shared cache changes
+      await Cache().forever(QueueWorker.restartKey, 'restart 1');
+      expect(
+        await worker.timeout(
+          QueueWorker.restartCheck + const Duration(seconds: 5),
+        ),
+        0,
+      );
+    });
+
     test('the sync driver needs no worker', () async {
       int code = await QueueWorker(app: _app(QueueConfig()))
           .run(<String>['work']);
@@ -219,6 +267,10 @@ void main() {
       '--sleep=1',
       '--stop-when-empty',
       '--timeout-grace=5',
+      '--backoff=1,5',
+      '--max-jobs=10',
+      '--max-time=60',
+      '--memory=128',
     ]);
     expect(command.name, 'work');
     WorkerOptions options = command.options;
@@ -230,7 +282,26 @@ void main() {
     expect(options.sleep, const Duration(seconds: 1));
     expect(options.stopWhenEmpty, isTrue);
     expect(options.timeoutGrace, const Duration(seconds: 5));
+    expect(options.backoff, const <Duration>[
+      Duration(seconds: 1),
+      Duration(seconds: 5),
+    ]);
+    expect(options.maxJobs, 10);
+    expect(options.maxTime, const Duration(seconds: 60));
+    expect(options.memory, 128);
     expect(QueueCommand.parse(<String>[]).options.timeoutGrace, isNull);
+    expect(QueueCommand.parse(<String>[]).options.maxJobs, isNull);
+    expect(QueueCommand.parse(<String>['prune-failed']).hours, 24);
+    expect(QueueCommand.parse(<String>['prune-failed', '--hours=2']).hours, 2);
+    expect(QueueCommand.parse(<String>['clear', 'emails']).argument, 'emails');
+    expect(
+      () => QueueCommand.parse(<String>['--backoff=1,x']),
+      throwsFormatException,
+    );
+    expect(
+      () => QueueCommand.parse(<String>['--max-jobs=0']),
+      throwsFormatException,
+    );
     expect(QueueCommand.parse(<String>[]).name, 'work');
     expect(QueueCommand.parse(<String>['retry', 'all']).argument, 'all');
   });

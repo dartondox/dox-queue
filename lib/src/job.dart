@@ -70,6 +70,24 @@ abstract class DoxJob {
   /// for the old run first.
   Duration? get timeout => null;
 
+  /// Opt-in: retry the job until this time, not [tries] times. It is
+  /// read once, when the job is dispatched, and saved with the job. Like
+  /// Laravel `retryUntil`. After a failed try, the job fails when this
+  /// time has passed, else it is tried again after its [backoff].
+  /// ```
+  /// @override
+  /// DateTime? get retryUntil => DateTime.now().add(Duration(minutes: 10));
+  /// ```
+  DateTime? get retryUntil => null;
+
+  /// Opt-in: fail the job after this many tries that threw an error,
+  /// even when [tries] or [retryUntil] allow more. A timeout is not
+  /// counted. Null: no limit.
+  int? get maxExceptions => null;
+
+  /// Opt-in: fail the job at once when a try times out, with no retry.
+  bool get failOnTimeout => false;
+
   /// The queue to put the job on. `dispatch(queue:)` wins over it.
   String get queue => 'default';
 
@@ -79,15 +97,60 @@ abstract class DoxJob {
 
   /// Put the job on the queue. A worker runs it later. Returns the job
   /// id. With the `sync` driver it runs at once.
+  ///
+  /// Wait with [delay], or until the time [delayUntil]. Not both.
   /// ```
   /// await SendWelcomeEmail(userId: 1).dispatch();
   /// await SendWelcomeEmail(userId: 1).dispatch(
   ///   delay: Duration(minutes: 5),
   ///   queue: 'emails',
   /// );
+  /// await SendWelcomeEmail(userId: 1).dispatch(
+  ///   delayUntil: DateTime.utc(2030, 1, 1, 9),
+  /// );
   /// ```
-  Future<String> dispatch({Duration? delay, String? queue}) {
-    return Queue.dispatch(this, delay: delay, queue: queue);
+  Future<String> dispatch({
+    Duration? delay,
+    String? queue,
+    DateTime? delayUntil,
+  }) {
+    return Queue.dispatch(
+      this,
+      delay: delay,
+      queue: queue,
+      delayUntil: delayUntil,
+    );
+  }
+
+  /// [dispatch] when [condition] is true. Returns the job id, or null
+  /// when the job was not dispatched.
+  /// ```
+  /// await SendWelcomeEmail(userId: 1).dispatchIf(user.wantsEmail);
+  /// ```
+  Future<String?> dispatchIf(
+    bool condition, {
+    Duration? delay,
+    String? queue,
+    DateTime? delayUntil,
+  }) async {
+    if (!condition) return null;
+    return dispatch(delay: delay, queue: queue, delayUntil: delayUntil);
+  }
+
+  /// [dispatch] when [condition] is false. Returns the job id, or null
+  /// when the job was not dispatched.
+  Future<String?> dispatchUnless(
+    bool condition, {
+    Duration? delay,
+    String? queue,
+    DateTime? delayUntil,
+  }) {
+    return dispatchIf(
+      !condition,
+      delay: delay,
+      queue: queue,
+      delayUntil: delayUntil,
+    );
   }
 
   /// Run the job now, in this process, with no queue.
