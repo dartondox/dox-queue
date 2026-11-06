@@ -1,6 +1,6 @@
 ## Unreleased
 
-- New opt-in job settings: `retryUntil` (retry until a time, not `tries` times), `maxExceptions` (fail after this many tries that threw) and `failOnTimeout` (fail at once on a timeout). Jobs without them work as before. `retryUntil` is read once at dispatch and saved with the job. Rows saved before this change are read as jobs with no `retryUntil`.
+- New opt-in job settings: `retryUntil` (retry until a time, not `tries` times), `maxExceptions` (fail after this many tries that threw) and `failOnTimeout` (fail at once on a timeout). Jobs without them work as before. `retryUntil` is read once at dispatch and saved with the job. Rows saved before this change are read as jobs with no `retryUntil`. `queue:retry` gives a failed job a fresh start: the tries and the exceptions count go back to 0, and `retryUntil` is read again from the job class.
 - New: `dispatch(delayUntil: DateTime)` waits until a time. `delay: Duration` still works. Give one of them, not both.
 - New: `dispatchIf(condition)` and `dispatchUnless(condition)`. They return the job id, or null when the job was not dispatched.
 - New worker flags: `--backoff=SECONDS[,SECONDS...]` (the retry wait of a job with no `backoff`), `--max-jobs=N`, `--max-time=SECONDS` and `--memory=MB` (stop the worker after the running jobs). All are off by default.

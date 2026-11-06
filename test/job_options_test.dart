@@ -233,6 +233,35 @@ void main() {
         expect(JobLog.failed, <String>['until']);
       });
 
+      test('a retried job gets its full maxExceptions again', () async {
+        await OptionsJob(key: 'again', maxTries: 10, exceptions: 2).dispatch();
+        await workUntilFailed('again');
+        expect(JobLog.runs['again'], 2);
+        JobLog.failed.clear();
+        String id = (await Queue.driver.failed()).single.id;
+        expect(await Queue.driver.retry(id), isTrue);
+        await workUntilFailed('again');
+        // two more tries, not one: the exceptions count starts at 0
+        expect(JobLog.runs['again'], 4);
+        List<FailedJob> failed = await Queue.driver.failed();
+        expect(JobPayload.decode(failed.single.payload).exceptions, 2);
+      });
+
+      test('a retried job gets a new retryUntil window', () async {
+        await OptionsJob(key: 'window', untilMillis: 400).dispatch();
+        await workUntilFailed('window');
+        int first = JobLog.runs['window']!;
+        expect(first, greaterThan(1));
+        JobLog.failed.clear();
+        String id = (await Queue.driver.failed()).single.id;
+        // the old window is over
+        await _wait(100);
+        expect(await Queue.driver.retry(id), isTrue);
+        await workUntilFailed('window');
+        // more than one try: the old window would give only one
+        expect(JobLog.runs['window']! - first, greaterThan(1));
+      });
+
       test('without retryUntil, tries is the limit', () async {
         await OptionsJob(key: 'once').dispatch();
         await workUntilFailed('once');

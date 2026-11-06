@@ -142,7 +142,7 @@ return 1''';
     String? text = await redis.hget(_failed, id);
     if (text == null) return false;
     FailedJob job = _failedJob(id, text);
-    await push(JobPayload.decode(job.payload).withAttempts(0));
+    await push(JobPayload.decode(job.payload).retried());
     await redis.hdel(_failed, id);
     return true;
   }
