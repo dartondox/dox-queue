@@ -202,6 +202,21 @@ class Queue {
     );
   }
 
+  /// `retryUntil` of the job class of [payload], read now, as unix time
+  /// in milliseconds. Null when the job has none, or can not be read
+  /// (the worker then fails it with the real error).
+  static int? retryUntilOf(JobPayload payload) {
+    try {
+      JobCodec? codec = config.jobs.byName(payload.job);
+      if (codec == null) return null;
+      String data = readData(payload.data, payload.job);
+      DoxJob job = codec.decode(jsonDecode(data) as Map<String, Object?>);
+      return job.retryUntil?.millisecondsSinceEpoch;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// the job data has only JSON types, dates and enums
   static Object? _toJson(Object? value) {
     if (value is DateTime) return value.toIso8601String();

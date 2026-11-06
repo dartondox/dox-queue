@@ -161,7 +161,7 @@ class DatabaseQueueDriver extends QueueDriver {
     return db.transaction(() async {
       FailedJob? job = await _find(db, id);
       if (job == null) return false;
-      await push(JobPayload.decode(job.payload).withAttempts(0));
+      await push(JobPayload.decode(job.payload).retried());
       await _forget(db, id);
       return true;
     });
