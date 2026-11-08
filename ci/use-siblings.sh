@@ -34,6 +34,7 @@ siblings=(
   "dox-postgres-native dox_postgres_native:."
   "dox-mysql-native dox_mysql_native:."
   "dox-mailer dox_mailer:."
+  "dox-view dox_view:."
 )
 
 if [ "${GITHUB_REF_TYPE:-}" = tag ]; then
