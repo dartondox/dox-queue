@@ -234,6 +234,35 @@ void main() {
       );
     });
 
+    test('a worker started after restart keeps running', () async {
+      Dox().cache = CacheManager(
+        const CacheConfig(
+          defaultStore: 'memory',
+          stores: <String, Map<String, dynamic>>{
+            'memory': <String, dynamic>{'driver': 'memory'},
+          },
+        ),
+      );
+      expect(await run(<String>['restart']), 0);
+      bool done = false;
+      Future<int> worker = run(<String>['work']).whenComplete(() {
+        done = true;
+      });
+      // the worker reads the key at least once in this time
+      await Future<void>.delayed(
+        QueueWorker.restartCheck + const Duration(seconds: 1),
+      );
+      expect(done, isFalse);
+      // a new restart still stops it
+      await Cache().forever(QueueWorker.restartKey, 'restart 2');
+      expect(
+        await worker.timeout(
+          QueueWorker.restartCheck + const Duration(seconds: 5),
+        ),
+        0,
+      );
+    });
+
     test('the sync driver needs no worker', () async {
       int code = await QueueWorker(app: _app(QueueConfig()))
           .run(<String>['work']);

@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:dox_orm/dox_orm.dart';
 
+import '../queue.dart';
 import '../queue_driver.dart';
 
 /// Keeps jobs in the `jobs` table and failed jobs in the `failed_jobs`
@@ -161,7 +162,7 @@ class DatabaseQueueDriver extends QueueDriver {
     return db.transaction(() async {
       FailedJob? job = await _find(db, id);
       if (job == null) return false;
-      await push(JobPayload.decode(job.payload).retried());
+      await push(Queue.retriedPayload(job.payload));
       await _forget(db, id);
       return true;
     });

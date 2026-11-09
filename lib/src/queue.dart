@@ -9,6 +9,7 @@ import 'job_registry.dart';
 import 'queue_config.dart';
 import 'queue_driver.dart';
 import 'queue_fake.dart';
+import 'queue_log.dart';
 import 'send_queued_mail.dart';
 
 /// Puts jobs on the queue. `QueueProvider` sets it up in every isolate.
@@ -212,9 +213,25 @@ class Queue {
       String data = readData(payload.data, payload.job);
       DoxJob job = codec.decode(jsonDecode(data) as Map<String, Object?>);
       return job.retryUntil?.millisecondsSinceEpoch;
-    } catch (_) {
+    } catch (error) {
+      // only the error type: the error text can quote the job data, and
+      // the data of a `ShouldBeEncrypted` job must stay secret
+      QueueLog.warn(
+        'Queue: can not read retryUntil of ${payload.job} '
+        '(${payload.id}): ${error.runtimeType}',
+      );
       return null;
     }
+  }
+
+  /// The failed job [text] (a [JobPayload.encode] text) for `queue:retry`.
+  /// A job with a `retryUntil` gets a new one, read again from the job
+  /// class. The drivers call it.
+  static JobPayload retriedPayload(String text) {
+    JobPayload payload = JobPayload.decode(text);
+    return payload.retried(
+      retryUntil: payload.retryUntil == null ? null : retryUntilOf(payload),
+    );
   }
 
   /// the job data has only JSON types, dates and enums

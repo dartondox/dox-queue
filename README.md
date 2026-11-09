@@ -325,7 +325,7 @@ Commands:
 | `retry all` | put all failed jobs back |
 | `forget <id>` | delete one failed job |
 | `flush` | delete all failed jobs |
-| `clear [queue]` | delete the jobs of a queue. Default: `default` |
+| `clear [queue]` | delete the waiting, delayed and reserved (running) jobs of a queue. Failed jobs stay. Default: `default` |
 | `restart` | stop the running workers after their current jobs |
 | `prune-failed` | delete failed jobs older than `--hours=N` (default 24) |
 

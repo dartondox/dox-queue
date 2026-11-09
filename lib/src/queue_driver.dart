@@ -1,8 +1,6 @@
 import 'dart:convert';
 import 'dart:math';
 
-import 'queue.dart';
-
 /// One queued job, as it is saved: the job name, its data and how many
 /// times a worker took it.
 class JobPayload {
@@ -61,15 +59,16 @@ class JobPayload {
   }
 
   /// A copy for `queue:retry`: a fresh start, like a new dispatch. No
-  /// tries and no exceptions yet. [retryUntil] is read again from the
-  /// job class, so the job gets a new time window.
-  JobPayload retried() {
+  /// tries and no exceptions yet. The driver passes a new [retryUntil],
+  /// read again from the job class with `Queue.retryUntilOf()`, so the
+  /// job gets a new time window.
+  JobPayload retried({int? retryUntil}) {
     return JobPayload(
       id: id,
       job: job,
       queue: queue,
       data: data,
-      retryUntil: retryUntil == null ? null : Queue.retryUntilOf(this),
+      retryUntil: retryUntil,
     );
   }
 

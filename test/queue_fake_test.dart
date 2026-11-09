@@ -165,6 +165,11 @@ void main() {
     expect(queue.pushed, hasLength(2));
     expect(queue.pushed.last.queue, 'mail');
     expect(queue.pushed.last.delay, Duration(minutes: 1));
+    queue.assertPushedTimes<SendQueuedMail>(2);
+    queue.assertPushed<SendQueuedMail>(
+      (SendQueuedMail job) => job.mailer == 'main',
+    );
+    queue.assertNotPushed<SendEncryptedQueuedMail>();
   });
 
   test('restore takes back Mail.queue() when there is no config', () {
