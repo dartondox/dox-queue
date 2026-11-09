@@ -17,7 +17,6 @@
 - `QueueDriver.release()` now also saves `job.payload`, so the worker can keep the exception count. A custom driver should save it too.
 - Fix: the `QueueFake` messages said "a UnusedJob". Now only "Uni" and "U" + one consonant (not "n") + vowel give "a", so it says "an UnusedJob" and still "a UniJob".
 - Fix: when `Mail.fake()` was on before `Queue.fake()`, `Queue.restore()` lost a queue set with `Mail.useQueue()`. Now `Queue.fake()` does not touch the mail queue while `Mail.fake()` is on.
-
 - Fix: the `QueueFake` check messages had bad grammar, like "a AllTypesJob" and "1 times". Now they say "an AllTypesJob" and "1 time". A name that starts with a "you" sound (like `UserJob` or `EuJob`) gets "a".
 - Fix: `Queue.restore()` did not undo the `Mail.useQueue()` call of `Queue.fake()`. With no `Queue.configure()`, `Mail.queue()` still found a queue after the test. Now `restore()` puts back the queue it had before `Queue.fake()` (also one from `Mail.useQueue()`). If it had none: no queue, or this queue when `Queue.configure()` was called.
 - New: `Queue.fake()` for tests. It keeps every dispatched job in a `QueueFake` and does not run or save them. Check them with `assertPushed<T>([test])`, `assertPushedTimes<T>(n)`, `assertNotPushed<T>()` and `assertNothingPushed()`. Read them with `pushed` (each has the job, the queue name and the delay) or `jobsOf<T>()`. It also catches `Mail.queue()` and `Mail.later()`. `dispatchSync()` still runs the job. `Queue.restore()` stops the fake.
@@ -30,7 +29,7 @@
 - Fix (opt-in): a job that timed out keeps running, and its retry could run at the same time. The new worker flag `--timeout-grace=SECONDS` (`WorkerOptions.timeoutGrace`) makes the worker wait for the old run before the next try. The default does not change. For the in-process worker, use `QueueConfig(workerTimeoutGrace: ...)`.
 - New opt-in `QueueConfig.redisFromEnv()`: reads the Redis server from `REDIS_URL`, or from `REDIS_HOST`, `REDIS_PORT`, `REDIS_USERNAME`, `REDIS_PASSWORD` and `REDIS_TLS`. Use it as `QueueConfig(redis: QueueConfig.redisFromEnv())`. Without it, the default is still localhost:6379.
 - Opt-in `ShouldBeEncrypted` job mixin: the job data is saved encrypted with the app key (AES-GCM of dox_core). Jobs without it are saved as before.
-- Needs dox_core 3.0.2 or newer (for `AppConfig.previousKeys`).
+- Needs dox_core 3.1.0 or newer.
 
 ## 3.0.0
 
