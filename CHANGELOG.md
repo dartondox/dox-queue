@@ -1,3 +1,7 @@
+## Unreleased
+
+- `SendQueuedMail` and `SendEncryptedQueuedMail` are now exported. A test with `Queue.fake()` can check a queued email with `queue.assertPushed<SendQueuedMail>()`.
+
 ## 3.1.0
 
 - New opt-in job settings: `retryUntil` (retry until a time, not `tries` times), `maxExceptions` (fail after this many tries that threw) and `failOnTimeout` (fail at once on a timeout). Jobs without them work as before. `retryUntil` is read once at dispatch and saved with the job. Rows saved before this change are read as jobs with no `retryUntil`. `queue:retry` gives a failed job a fresh start: the tries and the exceptions count go back to 0, and `retryUntil` is read again from the job class.

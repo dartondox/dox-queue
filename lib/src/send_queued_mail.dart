@@ -9,8 +9,12 @@ import 'queue.dart';
 /// The built-in job of `Mail.queue()` and `Mail.later()` of dox_mailer.
 /// It sends a saved [message] with the mailer [mailer].
 ///
-/// Apps do not use it. It is not in `lib/generated/jobs.g.dart`: the
+/// Apps do not dispatch it. It is not in `lib/generated/jobs.g.dart`: the
 /// [JobRegistry] finds it by itself (see [JobRegistry.builtIn]).
+///
+/// It is exported for tests. With `Queue.fake()`, check a queued email
+/// with `queue.assertPushed<SendQueuedMail>()`. It also matches a mail of
+/// `encrypt: true` ([SendEncryptedQueuedMail]).
 class SendQueuedMail extends DoxJob {
   SendQueuedMail({required this.mailer, required this.message});
 
