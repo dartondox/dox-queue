@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:ioredis/ioredis.dart';
 
+import '../queue.dart';
 import '../queue_driver.dart';
 
 /// Keeps jobs in Redis. Each queue has three keys:
@@ -142,7 +143,7 @@ return 1''';
     String? text = await redis.hget(_failed, id);
     if (text == null) return false;
     FailedJob job = _failedJob(id, text);
-    await push(JobPayload.decode(job.payload).retried());
+    await push(Queue.retriedPayload(job.payload));
     await redis.hdel(_failed, id);
     return true;
   }

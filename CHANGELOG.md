@@ -3,6 +3,8 @@
 - `SendQueuedMail` and `SendEncryptedQueuedMail` are now exported. A test with `Queue.fake()` can check a queued email with `queue.assertPushed<SendQueuedMail>()`.
 - Docs: `clear` also deletes the reserved (running) jobs of the queue, not only the waiting and delayed ones.
 - Note for custom drivers: a driver that `extends QueueDriver` gets `clear()` and `pruneFailed()` (they throw an `UnsupportedError`). A driver that `implements QueueDriver` gets no code from it, so it must add `clear()` and `pruneFailed()` itself, or it does not compile.
+- `Queue.retryUntilOf()` now logs a warning (with the error type) when it can not read the job. Before, it hid every error.
+- `JobPayload.retried()` takes the new `retryUntil` as a parameter. The built-in drivers read it with the new `Queue.retriedPayload()`, so `JobPayload` does not read the global `Queue.config` any more. A custom driver that calls `retried()` should use `Queue.retriedPayload()`, or the retried job has no `retryUntil`.
 
 ## 3.1.0
 
