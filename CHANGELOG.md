@@ -1,6 +1,8 @@
 ## Unreleased
 
 - `SendQueuedMail` and `SendEncryptedQueuedMail` are now exported. A test with `Queue.fake()` can check a queued email with `queue.assertPushed<SendQueuedMail>()`.
+- Docs: `clear` also deletes the reserved (running) jobs of the queue, not only the waiting and delayed ones.
+- Note for custom drivers: a driver that `extends QueueDriver` gets `clear()` and `pruneFailed()` (they throw an `UnsupportedError`). A driver that `implements QueueDriver` gets no code from it, so it must add `clear()` and `pruneFailed()` itself, or it does not compile.
 
 ## 3.1.0
 

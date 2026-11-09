@@ -186,9 +186,14 @@ void main() {
         String log = await _logOf(_retryThenFail);
         List<FailedJob> failed = await Queue.driver.failed();
         String error = failed.single.error;
+        // the encrypted details are random base64 text, and a short
+        // secret like "Ann" can be in it by chance. Check the text
+        // around them only.
+        String plainLog = log.replaceAll(_encrypted, '');
+        String plainError = error.replaceAll(_encrypted, '');
         for (String secret in _secrets) {
-          expect(log, isNot(contains(secret)));
-          expect(error, isNot(contains(secret)));
+          expect(plainLog, isNot(contains(secret)));
+          expect(plainError, isNot(contains(secret)));
         }
         // still enough to find the problem
         printOnFailure(log);
