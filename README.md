@@ -563,7 +563,7 @@ A failed check throws an `AssertionError` that says what was pushed.
 
 To read the jobs, use `queue.pushed`. Each item has the `job`, the `queue` name and the `delay` (null when there was none). `queue.jobsOf<T>()` gives the `T` jobs. `queue.clear()` forgets them.
 
-- `dispatchSync()` is not faked. It still runs the job.
+- `dispatchSync()` and `dispatchAfterResponse()` are not faked. They still run the job. The fake keeps their jobs in `queue.dispatchedSync` and `queue.dispatchedAfterResponse` (not in `queue.pushed`), so a test can check them.
 - `Mail.queue()` and `Mail.later()` of dox_mailer go through `dispatch()`, so the fake catches them too.
 - `Queue.restore()` stops the fake.
 

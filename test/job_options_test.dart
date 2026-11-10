@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:dox_core/dox_core.dart' show AppConfig, Dox, LoggerConfig;
 import 'package:dox_queue/dox_queue.dart';
 import 'package:test/test.dart';
 
@@ -96,6 +98,34 @@ Future<void> _wait(int millis) {
   return Future<void>.delayed(Duration(milliseconds: millis));
 }
 
+/// every line printed while [body] runs (the Dox logger prints)
+String _logOf(void Function() body) {
+  StringBuffer log = StringBuffer();
+  void keep(Zone self, ZoneDelegate parent, Zone zone, String line) {
+    log.writeln(line);
+  }
+
+  runZoned(body, zoneSpecification: ZoneSpecification(print: keep));
+  return log.toString();
+}
+
+/// a saved OptionsJob with [data] as its JSON text
+JobPayload _payload(String data, {int? retryUntil}) {
+  return JobPayload(
+    id: 'p1',
+    job: 'OptionsJob',
+    queue: 'default',
+    data: data,
+    attempts: 3,
+    exceptions: 2,
+    retryUntil: retryUntil,
+  );
+}
+
+String _optionsData({int? untilMillis}) {
+  return jsonEncode(_encode(OptionsJob(key: 'r', untilMillis: untilMillis)));
+}
+
 void main() {
   setUpAll(setUpTestApp);
 
@@ -121,6 +151,82 @@ void main() {
     expect(next.retryUntil, 99);
     expect(next.exceptions, 3);
     expect(next.attempts, 1);
+  });
+
+  group('retryUntilOf and retriedPayload', () {
+    setUp(() {
+      Queue.configure(QueueConfig(jobs: _jobs));
+      // log on, so the tests can read the warning
+      Dox().initialize(
+        AppConfig(
+          appKey: 'k' * 32,
+          totalIsolate: 1,
+          logger: LoggerConfig(enabled: true),
+        ),
+      );
+    });
+
+    tearDown(setUpTestApp);
+
+    test('retryUntilOf reads retryUntil from the job class now', () {
+      int before = DateTime.now().millisecondsSinceEpoch;
+      int? until = Queue.retryUntilOf(
+        _payload(_optionsData(untilMillis: 60000)),
+      );
+      expect(until, greaterThanOrEqualTo(before + 60000));
+      expect(Queue.retryUntilOf(_payload(_optionsData())), isNull);
+    });
+
+    test('retryUntilOf gives null for a job not in the registry', () {
+      JobPayload payload = JobPayload(
+        id: 'p2',
+        job: 'NoSuchJob',
+        queue: 'default',
+        data: '{}',
+      );
+      String log = _logOf(() => expect(Queue.retryUntilOf(payload), isNull));
+      expect(log, isEmpty);
+    });
+
+    test('retryUntilOf warns with the error type, not the job data', () {
+      // bad JSON: the FormatException text quotes the data
+      JobPayload payload = _payload('{"key": "secret-value"');
+      String log = _logOf(() => expect(Queue.retryUntilOf(payload), isNull));
+      expect(log, contains('can not read retryUntil of OptionsJob (p1)'));
+      expect(log, contains('FormatException'));
+      expect(log, isNot(contains('secret-value')));
+    });
+
+    test('retriedPayload gives a fresh start and a new retryUntil', () {
+      int before = DateTime.now().millisecondsSinceEpoch;
+      String data = _optionsData(untilMillis: 60000);
+      JobPayload old = _payload(data, retryUntil: 1);
+      JobPayload next = Queue.retriedPayload(old.encode());
+      expect(next.id, 'p1');
+      expect(next.job, 'OptionsJob');
+      expect(next.queue, 'default');
+      expect(next.data, data);
+      expect(next.attempts, 0);
+      expect(next.exceptions, 0);
+      expect(next.retryUntil, greaterThanOrEqualTo(before + 60000));
+    });
+
+    test('retriedPayload keeps no retryUntil for a job saved without', () {
+      // the job class has one now, but the saved job had none
+      JobPayload old = _payload(_optionsData(untilMillis: 60000));
+      JobPayload next = Queue.retriedPayload(old.encode());
+      expect(next.retryUntil, isNull);
+      expect(next.attempts, 0);
+    });
+
+    test('retriedPayload drops retryUntil when the job can not be read', () {
+      JobPayload old = _payload('{"key":', retryUntil: 1);
+      late JobPayload next;
+      String log = _logOf(() => next = Queue.retriedPayload(old.encode()));
+      expect(next.retryUntil, isNull);
+      expect(next.attempts, 0);
+      expect(log, contains('FormatException'));
+    });
   });
 
   test('Worker.backoffFor uses the worker backoff for a job with none', () {

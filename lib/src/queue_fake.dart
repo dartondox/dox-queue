@@ -22,6 +22,14 @@ class QueueFake {
   /// every pushed job, oldest first
   final List<PushedJob> pushed = <PushedJob>[];
 
+  /// every job of `dispatchSync()`, oldest first. The fake does not
+  /// stop them: they still run. They are not in [pushed].
+  final List<DoxJob> dispatchedSync = <DoxJob>[];
+
+  /// every job of `dispatchAfterResponse()`, oldest first. The fake does
+  /// not stop them: they still run. They are not in [pushed].
+  final List<DoxJob> dispatchedAfterResponse = <DoxJob>[];
+
   /// the pushed jobs of type [T]
   List<PushedJob> pushedOf<T extends DoxJob>() {
     return pushed.where(_isA<T>).toList();
@@ -78,8 +86,13 @@ class QueueFake {
     }
   }
 
-  /// forget the pushed jobs
-  void clear() => pushed.clear();
+  /// forget the pushed jobs, and the jobs of [dispatchedSync] and
+  /// [dispatchedAfterResponse]
+  void clear() {
+    pushed.clear();
+    dispatchedSync.clear();
+    dispatchedAfterResponse.clear();
+  }
 
   String _summary() {
     if (pushed.isEmpty) return 'No jobs were pushed.';

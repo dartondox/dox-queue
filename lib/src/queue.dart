@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:dox_core/dox_core.dart' show AESEncryptor, Dox;
+import 'package:dox_core/dox_core.dart' show AESEncryptor, AfterResponse, Dox;
 import 'package:dox_mailer/dox_mailer.dart'
     show ArrayTransport, Mail, MailQueue;
 
@@ -34,7 +34,9 @@ class Queue {
   /// Keep dispatched jobs in a [QueueFake] and run or save none of them,
   /// so a test can check what was pushed. It needs no [configure]. It
   /// also catches `Mail.queue()` and `Mail.later()` of dox_mailer.
-  /// [dispatchSync] still runs the job. [restore] undoes it.
+  /// [dispatchSync] and [dispatchAfterResponse] still run the job. The
+  /// fake keeps their jobs in `dispatchedSync` and
+  /// `dispatchedAfterResponse`. [restore] undoes it.
   ///
   /// When `Mail.fake()` is already on, mails go to that fake, so this
   /// does not change the mail queue. A `Mail.useQueue()` queue is kept.
@@ -138,7 +140,7 @@ class Queue {
     QueueConfig settings = config;
     String id = JobPayload.newId();
     if (settings.driver == 'sync') {
-      await dispatchSync(job);
+      await _runNow(job);
       return id;
     }
     JobCodec codec = settings.jobs.of(job);
@@ -157,7 +159,20 @@ class Queue {
 
   /// Run [job] now, in this process, with no queue. When it throws,
   /// `job.failed()` runs and the error is thrown again.
-  static Future<void> dispatchSync(DoxJob job) async {
+  static Future<void> dispatchSync(DoxJob job) {
+    _fake?.dispatchedSync.add(job);
+    return _runNow(job);
+  }
+
+  /// Run [job] in this process after the response is sent. See
+  /// `DoxJob.dispatchAfterResponse()`.
+  static void dispatchAfterResponse(DoxJob job) {
+    _fake?.dispatchedAfterResponse.add(job);
+    AfterResponse.run(() => _runNow(job));
+  }
+
+  /// [dispatchSync] without the fake: the job runs, nothing is kept
+  static Future<void> _runNow(DoxJob job) async {
     try {
       await job.handle();
     } catch (error, stack) {

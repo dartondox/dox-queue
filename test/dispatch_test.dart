@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dox_core/dox_core.dart';
 import 'package:dox_core/testing.dart';
 import 'package:dox_queue/dox_queue.dart';
@@ -12,6 +14,12 @@ class WelcomeRouter extends Router {
   void register() {
     Route.get('/welcome', _welcome);
     Route.get('/after', _after);
+    Route.get('/after-fail', _afterFail);
+  }
+
+  static String _afterFail(DoxRequest req) {
+    FlakyJob(key: 'after', failTimes: 1).dispatchAfterResponse();
+    return 'ok';
   }
 
   /// the job must not run before the response is sent
@@ -28,17 +36,39 @@ class WelcomeRouter extends Router {
 
 TestStore _sqlite = testStores.first;
 
-AppConfig _app(QueueConfig config) {
+/// keeps the first reported error
+class _ErrorRecorder extends ExceptionHandler {
+  final Completer<Object> reported = Completer<Object>();
+
+  @override
+  void report(Object error, StackTrace stackTrace) {
+    if (!reported.isCompleted) reported.complete(error);
+  }
+}
+
+AppConfig _app(
+  QueueConfig config, {
+  ExceptionHandler exceptionHandler = const ExceptionHandler(),
+}) {
   return AppConfig(
     appKey: 'k' * 32,
     totalIsolate: 1,
     routers: <Router>[WelcomeRouter()],
     providers: <DoxProvider>[QueueProvider(config)],
+    exceptionHandler: exceptionHandler,
   );
 }
 
 Future<void> _wait(int millis) {
   return Future<void>.delayed(Duration(milliseconds: millis));
+}
+
+/// waits until a job ran (or failed), at most 5 seconds
+Future<void> _waitForJob() async {
+  for (int i = 0; i < 500; i++) {
+    if (JobLog.handled.isNotEmpty || JobLog.failed.isNotEmpty) return;
+    await _wait(10);
+  }
 }
 
 void main() {
@@ -124,9 +154,7 @@ void main() {
         TestResponse res = await client.get('/after');
         expect(res.status, 200);
         expect(res.body, isEmpty);
-        for (int i = 0; i < 50 && JobLog.handled.isEmpty; i++) {
-          await _wait(10);
-        }
+        await _waitForJob();
         expect(JobLog.handled, <String>['welcome 7']);
       } finally {
         await client.close();
@@ -137,8 +165,28 @@ void main() {
       Queue.configure(QueueConfig(jobs: jobRegistry));
       SendWelcomeEmail(userId: 8).dispatchAfterResponse();
       expect(JobLog.handled, isEmpty);
-      await _wait(10);
+      await _waitForJob();
       expect(JobLog.handled, <String>['welcome 8']);
+    });
+
+    test('a job that throws calls failed() and reports the error', () async {
+      _ErrorRecorder recorder = _ErrorRecorder();
+      DoxTestClient client = await DoxTestClient.start(
+        _app(QueueConfig(jobs: jobRegistry), exceptionHandler: recorder),
+      );
+      try {
+        TestResponse res = await client.get('/after-fail');
+        expect(res.status, 200);
+        expect(res.body, 'ok');
+        Object error = await recorder.reported.future.timeout(
+          const Duration(seconds: 5),
+        );
+        expect(error, isA<StateError>());
+        expect(JobLog.failed, <String>['flaky after: $error']);
+        expect(JobLog.handled, isEmpty);
+      } finally {
+        await client.close();
+      }
     });
   });
 
