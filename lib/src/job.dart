@@ -1,7 +1,5 @@
 import 'dart:async';
 
-import 'package:dox_core/dox_core.dart' show AfterResponse;
-
 import 'queue.dart';
 
 /// Marks a background job. `dart run build_runner build` finds every
@@ -168,7 +166,8 @@ abstract class DoxJob {
   /// Outside a request (eg. in a command) the job runs soon, after the
   /// code that runs now. When it throws, [failed] runs and the error
   /// goes to the exception handler. It never reaches the client.
-  /// `Queue.fake()` does not catch it, like [dispatchSync].
+  /// `Queue.fake()` keeps it in `dispatchedAfterResponse`, and it still
+  /// runs, like [dispatchSync].
   ///
   /// It needs `AfterResponse.enable()` of dox_core. `QueueProvider`
   /// calls it. When the server stops, a job that did not run yet is
@@ -177,7 +176,7 @@ abstract class DoxJob {
   /// SendWelcomeEmail(userId: 1).dispatchAfterResponse();
   /// ```
   void dispatchAfterResponse() {
-    AfterResponse.run(dispatchSync);
+    Queue.dispatchAfterResponse(this);
   }
 }
 

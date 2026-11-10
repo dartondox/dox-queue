@@ -86,11 +86,35 @@ void main() {
     expect(queue.jobsOf<SendWelcomeEmail>().last.userId, 2);
   });
 
-  test('dispatchSync still runs the job', () async {
+  test('dispatchSync still runs the job, and the fake keeps it', () async {
     await SendWelcomeEmail(userId: 3).dispatchSync();
     expect(JobLog.handled, <String>['welcome 3']);
     queue.assertNothingPushed();
+    expect(queue.dispatchedSync, hasLength(1));
+    expect((queue.dispatchedSync.single as SendWelcomeEmail).userId, 3);
+    expect(queue.dispatchedAfterResponse, isEmpty);
   });
+
+  test(
+    'dispatchAfterResponse still runs the job, and the fake keeps it',
+    () async {
+      SendWelcomeEmail(userId: 4).dispatchAfterResponse();
+      expect(queue.dispatchedAfterResponse, hasLength(1));
+      expect(
+        (queue.dispatchedAfterResponse.single as SendWelcomeEmail).userId,
+        4,
+      );
+      // it is not counted as a dispatchSync too
+      expect(queue.dispatchedSync, isEmpty);
+      queue.assertNothingPushed();
+      for (int i = 0; i < 500 && JobLog.handled.isEmpty; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      expect(JobLog.handled, <String>['welcome 4']);
+      queue.clear();
+      expect(queue.dispatchedAfterResponse, isEmpty);
+    },
+  );
 
   test('assertPushed', () async {
     expect(

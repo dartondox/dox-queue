@@ -1,5 +1,6 @@
 ## Unreleased
 
+- `Queue.fake()` did not keep the jobs of `dispatchSync()` and `dispatchAfterResponse()`, so a test could not check them. Now the fake keeps them in `dispatchedSync` and `dispatchedAfterResponse`. The jobs still run, as before. They are not in `pushed`, so `assertPushed()` and the other checks work as before. `clear()` also empties the two new lists.
 - New: `dispatchAfterResponse()` runs a job after the response is sent, like Laravel. The client does not wait for it. The job runs in the same process, like `dispatchSync()`. It does not go on the queue, so it returns nothing (no job id) and has no retry. Outside a request it runs soon. An error goes to the exception handler, never to the client. `QueueProvider` now calls `AfterResponse.enable()` of dox_core for it. Needs dox_core with `AfterResponse`.
 - `SendQueuedMail` and `SendEncryptedQueuedMail` are now exported. A test with `Queue.fake()` can check a queued email with `queue.assertPushed<SendQueuedMail>()`.
 - Docs: `clear` also deletes the reserved (running) jobs of the queue, not only the waiting and delayed ones.
