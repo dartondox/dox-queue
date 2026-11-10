@@ -259,6 +259,14 @@ Run a job now, in this process, with no queue:
 await SendWelcomeEmail(userId: 1).dispatchSync();
 ```
 
+Run a job in this process after the response is sent. The client does not wait for it:
+
+```dart
+SendWelcomeEmail(userId: 1).dispatchAfterResponse();
+```
+
+It does not go on the queue, so there is no job id and no retry. When the server stops, a job that did not run yet is lost.
+
 ## Run the worker
 
 ```bash

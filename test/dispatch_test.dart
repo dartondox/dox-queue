@@ -11,6 +11,14 @@ class WelcomeRouter extends Router {
   @override
   void register() {
     Route.get('/welcome', _welcome);
+    Route.get('/after', _after);
+  }
+
+  /// the job must not run before the response is sent
+  static Future<String> _after(DoxRequest req) async {
+    SendWelcomeEmail(userId: 7).dispatchAfterResponse();
+    await _wait(50);
+    return JobLog.handled.join(',');
   }
 
   static Future<String> _welcome(DoxRequest req) {
@@ -105,6 +113,34 @@ void main() {
       }
     },
   );
+
+  group('dispatchAfterResponse', () {
+    tearDown(AfterResponse.disable);
+
+    test('runs the job after the response is sent', () async {
+      QueueConfig config = QueueConfig(jobs: jobRegistry);
+      DoxTestClient client = await DoxTestClient.start(_app(config));
+      try {
+        TestResponse res = await client.get('/after');
+        expect(res.status, 200);
+        expect(res.body, isEmpty);
+        for (int i = 0; i < 50 && JobLog.handled.isEmpty; i++) {
+          await _wait(10);
+        }
+        expect(JobLog.handled, <String>['welcome 7']);
+      } finally {
+        await client.close();
+      }
+    });
+
+    test('outside a request the job runs soon', () async {
+      Queue.configure(QueueConfig(jobs: jobRegistry));
+      SendWelcomeEmail(userId: 8).dispatchAfterResponse();
+      expect(JobLog.handled, isEmpty);
+      await _wait(10);
+      expect(JobLog.handled, <String>['welcome 8']);
+    });
+  });
 
   group('QueueWorker', () {
     QueueConfig config = QueueConfig(
