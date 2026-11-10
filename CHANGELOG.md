@@ -1,5 +1,6 @@
 ## Unreleased
 
+- New: `dispatchAfterResponse()` runs a job after the response is sent, like Laravel. The client does not wait for it. The job runs in the same process, like `dispatchSync()`. It does not go on the queue, so it returns nothing (no job id) and has no retry. Outside a request it runs soon. An error goes to the exception handler, never to the client. `QueueProvider` now calls `AfterResponse.enable()` of dox_core for it. Needs dox_core with `AfterResponse`.
 - `SendQueuedMail` and `SendEncryptedQueuedMail` are now exported. A test with `Queue.fake()` can check a queued email with `queue.assertPushed<SendQueuedMail>()`.
 - Docs: `clear` also deletes the reserved (running) jobs of the queue, not only the waiting and delayed ones.
 - Note for custom drivers: a driver that `extends QueueDriver` gets `clear()` and `pruneFailed()` (they throw an `UnsupportedError`). A driver that `implements QueueDriver` gets no code from it, so it must add `clear()` and `pruneFailed()` itself, or it does not compile.

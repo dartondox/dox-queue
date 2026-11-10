@@ -15,7 +15,8 @@ import 'worker.dart';
 /// }
 /// ```
 /// With `QueueConfig(workInProcess: true)` it also runs a worker in the
-/// first isolate of the web server.
+/// first isolate of the web server. It also turns on `AfterResponse` of
+/// dox_core, for `dispatchAfterResponse()`.
 class QueueProvider extends DoxProvider {
   QueueProvider(this.config);
 
@@ -27,6 +28,8 @@ class QueueProvider extends DoxProvider {
   @override
   Future<void> setup() async {
     Queue.configure(config);
+    // for DoxJob.dispatchAfterResponse()
+    AfterResponse.enable();
     bool inProcess =
         config.workInProcess &&
         config.driver != 'sync' &&

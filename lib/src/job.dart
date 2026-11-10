@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:dox_core/dox_core.dart' show AfterResponse;
+
 import 'queue.dart';
 
 /// Marks a background job. `dart run build_runner build` finds every
@@ -156,6 +158,26 @@ abstract class DoxJob {
   /// Run the job now, in this process, with no queue.
   Future<void> dispatchSync() {
     return Queue.dispatchSync(this);
+  }
+
+  /// Run the job in this process after the response is sent, like
+  /// Laravel `dispatchAfterResponse`. The client does not wait for it.
+  /// The job does not go on the queue, so there is no job id, no retry
+  /// and no worker. It is like [dispatchSync], only later.
+  ///
+  /// Outside a request (eg. in a command) the job runs soon, after the
+  /// code that runs now. When it throws, [failed] runs and the error
+  /// goes to the exception handler. It never reaches the client.
+  /// `Queue.fake()` does not catch it, like [dispatchSync].
+  ///
+  /// It needs `AfterResponse.enable()` of dox_core. `QueueProvider`
+  /// calls it. When the server stops, a job that did not run yet is
+  /// lost. Use [dispatch] for work that must run.
+  /// ```
+  /// SendWelcomeEmail(userId: 1).dispatchAfterResponse();
+  /// ```
+  void dispatchAfterResponse() {
+    AfterResponse.run(dispatchSync);
   }
 }
 
