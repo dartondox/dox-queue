@@ -159,6 +159,8 @@ class Queue {
 
   /// Run [job] now, in this process, with no queue. When it throws,
   /// `job.failed()` runs and the error is thrown again.
+  /// With [fake] on, the job still runs and is kept in
+  /// `QueueFake.dispatchedSync`.
   static Future<void> dispatchSync(DoxJob job) {
     _fake?.dispatchedSync.add(job);
     return _runNow(job);
@@ -166,6 +168,8 @@ class Queue {
 
   /// Run [job] in this process after the response is sent. See
   /// `DoxJob.dispatchAfterResponse()`.
+  /// With [fake] on, the job still runs and is kept in
+  /// `QueueFake.dispatchedAfterResponse`.
   static void dispatchAfterResponse(DoxJob job) {
     _fake?.dispatchedAfterResponse.add(job);
     AfterResponse.run(() => _runNow(job));
