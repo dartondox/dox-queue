@@ -36,7 +36,8 @@ class Skip extends JobMiddleware {
   }
 }
 
-/// a job with the middleware of [mode]: `order`, `skip` or `release`
+/// a job with the middleware of [mode]: `order`, `skip`, `release`,
+/// `limit`, `overlap-wait`, `overlap-drop` or `throttle`
 class MiddlewareJob extends DoxJob with HasMiddleware {
   MiddlewareJob(this.mode);
 
@@ -49,12 +50,28 @@ class MiddlewareJob extends DoxJob with HasMiddleware {
   List<JobMiddleware> get middleware => switch (mode) {
     'skip' => const <JobMiddleware>[Skip()],
     'release' => const <JobMiddleware>[Skip(releaseOnce: true)],
+    'limit' => const <JobMiddleware>[
+      RateLimited('mail', 2, Duration(seconds: 1)),
+    ],
+    'overlap-wait' => const <JobMiddleware>[
+      WithoutOverlapping('report', releaseAfter: Duration(seconds: 1)),
+    ],
+    'overlap-drop' => const <JobMiddleware>[
+      WithoutOverlapping('report', releaseAfter: null),
+    ],
+    'throttle' => const <JobMiddleware>[
+      ThrottlesExceptions('api', maxAttempts: 1),
+    ],
     _ => const <JobMiddleware>[Mark('a'), Mark('b')],
   };
 
   @override
   Future<void> handle() async {
     JobLog.handled.add('handle $mode');
+    if (mode.startsWith('overlap')) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    if (mode == 'throttle') throw StateError('the api is down');
   }
 
   static Map<String, Object?> encode(DoxJob job) {
@@ -77,7 +94,11 @@ JobRegistry registry = const JobRegistry(<JobCodec>[
 
 void main() {
   setUpAll(setUpTestApp);
-  setUp(JobLog.clear);
+  setUp(() async {
+    JobLog.clear();
+    await useTestCache();
+  });
+  tearDownAll(closeTestCache);
 
   for (TestStore store in testStores) {
     group('${store.name} middleware', () {
@@ -94,6 +115,11 @@ void main() {
           jobs: registry,
           options: const WorkerOptions(stopWhenEmpty: true),
         ).run();
+      }
+
+      /// two workers at once, like two worker processes
+      Future<void> workTwice() {
+        return Future.wait(<Future<void>>[work(), work()]);
       }
 
       test('runs in order, the first one outside', () async {
@@ -125,6 +151,52 @@ void main() {
         expect(await Queue.driver.pop('default'), isNull);
         expect(await Queue.driver.failed(), isEmpty);
       });
+
+      test('RateLimited: the limit counts for all workers', () async {
+        for (int i = 0; i < 5; i++) {
+          await MiddlewareJob('limit').dispatch();
+        }
+        await workTwice();
+        // 2 ran, 3 wait for the next window
+        expect(JobLog.handled, hasLength(2));
+        expect(await Queue.driver.failed(), isEmpty);
+        expect(await Queue.driver.pop('default'), isNull);
+        await Future<void>.delayed(const Duration(milliseconds: 1100));
+        await workTwice();
+        expect(JobLog.handled, hasLength(4));
+      });
+
+      test('WithoutOverlapping: the other job waits', () async {
+        await MiddlewareJob('overlap-wait').dispatch();
+        await MiddlewareJob('overlap-wait').dispatch();
+        await workTwice();
+        expect(JobLog.handled, <String>['handle overlap-wait']);
+        expect(await Queue.driver.pop('default'), isNull);
+        await Future<void>.delayed(const Duration(milliseconds: 1100));
+        await work();
+        expect(JobLog.handled, hasLength(2));
+        expect(await Queue.driver.failed(), isEmpty);
+      });
+
+      test('WithoutOverlapping: releaseAfter null drops the job', () async {
+        await MiddlewareJob('overlap-drop').dispatch();
+        await MiddlewareJob('overlap-drop').dispatch();
+        await workTwice();
+        expect(JobLog.handled, <String>['handle overlap-drop']);
+        await Future<void>.delayed(const Duration(milliseconds: 1100));
+        expect(await Queue.driver.pop('default'), isNull);
+        expect(await Queue.driver.failed(), isEmpty);
+      });
+
+      test('ThrottlesExceptions: after the limit the job waits', () async {
+        await MiddlewareJob('throttle').dispatch();
+        await work();
+        // try 1 threw and was released, try 2 found the limit hit and
+        // was released until the window ends: no failed job
+        expect(JobLog.handled, <String>['handle throttle']);
+        expect(await Queue.driver.failed(), isEmpty);
+        expect(await Queue.driver.pop('default'), isNull);
+      });
     }, skip: store.skip);
   }
 
@@ -136,6 +208,15 @@ void main() {
       await MiddlewareJob('order').dispatch();
       expect(JobLog.handled, hasLength(10));
       expect(JobLog.handled[2], 'handle order');
+    });
+
+    test('ThrottlesExceptions: the error goes on, then it skips', () async {
+      await expectLater(
+        MiddlewareJob('throttle').dispatchSync(),
+        throwsStateError,
+      );
+      await MiddlewareJob('throttle').dispatchSync();
+      expect(JobLog.handled, <String>['handle throttle']);
     });
 
     test('release() outside a worker does nothing', () async {
