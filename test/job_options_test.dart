@@ -98,17 +98,6 @@ Future<void> _wait(int millis) {
   return Future<void>.delayed(Duration(milliseconds: millis));
 }
 
-/// every line printed while [body] runs (the Dox logger prints)
-String _logOf(void Function() body) {
-  StringBuffer log = StringBuffer();
-  void keep(Zone self, ZoneDelegate parent, Zone zone, String line) {
-    log.writeln(line);
-  }
-
-  runZoned(body, zoneSpecification: ZoneSpecification(print: keep));
-  return log.toString();
-}
-
 /// a saved OptionsJob with [data] as its JSON text
 JobPayload _payload(String data, {int? retryUntil}) {
   return JobPayload(
@@ -177,21 +166,25 @@ void main() {
       expect(Queue.retryUntilOf(_payload(_optionsData())), isNull);
     });
 
-    test('retryUntilOf gives null for a job not in the registry', () {
+    test('retryUntilOf gives null for a job not in the registry', () async {
       JobPayload payload = JobPayload(
         id: 'p2',
         job: 'NoSuchJob',
         queue: 'default',
         data: '{}',
       );
-      String log = _logOf(() => expect(Queue.retryUntilOf(payload), isNull));
+      String log = await logOf(
+        () => expect(Queue.retryUntilOf(payload), isNull),
+      );
       expect(log, isEmpty);
     });
 
-    test('retryUntilOf warns with the error type, not the job data', () {
+    test('retryUntilOf warns with the error type, not the job data', () async {
       // bad JSON: the FormatException text quotes the data
       JobPayload payload = _payload('{"key": "secret-value"');
-      String log = _logOf(() => expect(Queue.retryUntilOf(payload), isNull));
+      String log = await logOf(
+        () => expect(Queue.retryUntilOf(payload), isNull),
+      );
       expect(log, contains('can not read retryUntil of OptionsJob (p1)'));
       expect(log, contains('FormatException'));
       expect(log, isNot(contains('secret-value')));
@@ -219,14 +212,19 @@ void main() {
       expect(next.attempts, 0);
     });
 
-    test('retriedPayload drops retryUntil when the job can not be read', () {
-      JobPayload old = _payload('{"key":', retryUntil: 1);
-      late JobPayload next;
-      String log = _logOf(() => next = Queue.retriedPayload(old.encode()));
-      expect(next.retryUntil, isNull);
-      expect(next.attempts, 0);
-      expect(log, contains('FormatException'));
-    });
+    test(
+      'retriedPayload drops retryUntil when the job can not be read',
+      () async {
+        JobPayload old = _payload('{"key":', retryUntil: 1);
+        late JobPayload next;
+        String log = await logOf(
+          () => next = Queue.retriedPayload(old.encode()),
+        );
+        expect(next.retryUntil, isNull);
+        expect(next.attempts, 0);
+        expect(log, contains('FormatException'));
+      },
+    );
   });
 
   test('Worker.backoffFor uses the worker backoff for a job with none', () {

@@ -47,17 +47,6 @@ class QuoteTransport extends Transport {
   }
 }
 
-/// every line the worker logs while [body] runs
-Future<String> _logOf(Future<void> Function() body) async {
-  StringBuffer log = StringBuffer();
-  void keep(Zone self, ZoneDelegate parent, Zone zone, String line) {
-    log.writeln(line);
-  }
-
-  await runZoned(body, zoneSpecification: ZoneSpecification(print: keep));
-  return log.toString();
-}
-
 /// the parts of the test mail that must not be in a log
 const List<String> _secrets = <String>[
   'ann@example.com',
@@ -183,7 +172,7 @@ void main() {
 
       test('encrypt: true: a send error shows no mail data', () async {
         await Mail.mailer('reject').queue(_message(), encrypt: true);
-        String log = await _logOf(_retryThenFail);
+        String log = await logOf(_retryThenFail);
         List<FailedJob> failed = await Queue.driver.failed();
         String error = failed.single.error;
         // the encrypted details are random base64 text, and a short
@@ -211,7 +200,7 @@ void main() {
         String html = '<p>Your reset code is 918273</p>${'x' * 100 * 1024}';
         Message message = _message().copyWith(html: html);
         await Mail.mailer('quote').queue(message, encrypt: true);
-        String log = await _logOf(_retryThenFail);
+        String log = await logOf(_retryThenFail);
         String error = (await Queue.driver.failed()).single.error;
         for (String text in <String>[log, error]) {
           // the encrypted details are random base64 text. About 1 in 300
@@ -226,7 +215,7 @@ void main() {
 
       test('a plain mail job keeps the full error, as before', () async {
         await Mail.mailer('reject').queue(_message());
-        await _logOf(_retryThenFail);
+        await logOf(_retryThenFail);
         List<FailedJob> failed = await Queue.driver.failed();
         expect(failed.single.error, contains('<ANN@example.com>'));
       });
