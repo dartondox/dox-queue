@@ -7,6 +7,7 @@ export 'package:ioredis/ioredis.dart' show RedisOptions;
 export 'src/drivers/database_queue_driver.dart';
 export 'src/drivers/redis_queue_driver.dart';
 export 'src/job.dart';
+export 'src/job_middleware.dart';
 export 'src/job_registry.dart';
 export 'src/queue.dart';
 export 'src/queue_config.dart';

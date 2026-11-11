@@ -1,4 +1,5 @@
 import 'job.dart';
+import 'job_middleware.dart';
 
 /// What a job asked for inside `handle()`
 enum JobAction { release, fail, delete }
@@ -40,10 +41,26 @@ class JobRun {
   Future<void> handle(DoxJob job) async {
     _runs[job] = this;
     try {
-      await job.handle();
+      if (job is HasMiddleware) {
+        await _through(job, job.middleware, 0);
+      } else {
+        await job.handle();
+      }
     } finally {
       ended = true;
       if (identical(_runs[job], this)) _runs[job] = null;
     }
+  }
+
+  /// middleware number [index] and the ones after it, then `handle()`
+  static Future<void> _through(
+    DoxJob job,
+    List<JobMiddleware> middleware,
+    int index,
+  ) {
+    if (index == middleware.length) return job.handle();
+    return middleware[index].handle(job, () {
+      return _through(job, middleware, index + 1);
+    });
   }
 }

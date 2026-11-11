@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'job_middleware.dart';
 import 'job_run.dart';
 import 'queue.dart';
 
@@ -217,6 +218,23 @@ abstract class DoxJob {
 /// with the same key, or one of `AppConfig.previousKeys`. The job name,
 /// queue and id stay plain text.
 mixin ShouldBeEncrypted on DoxJob {}
+
+/// Opt-in: run `handle()` through a list of [JobMiddleware], like the
+/// Laravel job `middleware()`. The first one runs first. The worker,
+/// the `sync` driver and `dispatchSync()` use them.
+/// ```
+/// @Job()
+/// class SendReport extends DoxJob with HasMiddleware {
+///   @override
+///   List<JobMiddleware> get middleware => <JobMiddleware>[
+///     RateLimited('reports', 10, Duration(minutes: 1)),
+///   ];
+///   ...
+/// }
+/// ```
+mixin HasMiddleware on DoxJob {
+  List<JobMiddleware> get middleware;
+}
 
 /// Opt-in: lets a job control its own run inside `handle()`, like
 /// Laravel `InteractsWithQueue`: [attempts], [release], [fail] and
