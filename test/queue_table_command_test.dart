@@ -39,6 +39,10 @@ void main() {
     expect(files, hasLength(1));
     expect(files.first.path, endsWith('_create_queue_tables.dart'));
     expect(files.first.readAsStringSync(), contains('QueueTables.up(schema)'));
+    expect(
+      files.first.readAsStringSync(),
+      contains('QueueTables.upBatches(schema)'),
+    );
     expect(exitCode, 0);
 
     await command.run(<String>[]);

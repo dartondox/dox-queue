@@ -101,7 +101,7 @@ The worker starts the providers of your app (database, cache, queue). It does no
 
 ### 4. Tables (database driver only)
 
-Run `dox queue:table`. It writes a migration in `db/migration` that makes the `jobs` and `failed_jobs` tables. Then run `dox migrate`.
+Run `dox queue:table`. It writes a migration in `db/migration` that makes the `jobs` and `failed_jobs` tables, and the `job_batches` table of [job batches](#job-batches). Then run `dox migrate`.
 
 ```bash
 dox queue:table
@@ -110,7 +110,7 @@ dox migrate
 
 `queue:table` is a [package command](https://dartondox.dev/digging-deeper/package-commands/) of `dox_queue`. It does not overwrite: when a `create_queue_tables` migration is already there, it prints so and stops.
 
-The migration it writes looks like this. You can also write it by hand. `QueueTables` makes the two tables.
+The migration it writes looks like this. You can also write it by hand. `QueueTables` makes the tables.
 
 `db/migration/2026_10_25_000000_create_queue_tables.dart`:
 
@@ -119,19 +119,23 @@ The migration it writes looks like this. You can also write it by hand. `QueueTa
 import 'package:dox_migration/dox_migration.dart';
 import 'package:dox_queue/dox_queue.dart';
 
-/// The jobs and failed_jobs tables of dox_queue.
+/// The jobs, failed_jobs and job_batches tables of dox_queue.
 class CreateQueueTables extends Migration {
   @override
   Future<void> up(Schema schema) async {
     await QueueTables.up(schema);
+    await QueueTables.upBatches(schema);
   }
 
   @override
   Future<void> down(Schema schema) async {
+    await QueueTables.downBatches(schema);
     await QueueTables.down(schema);
   }
 }
 ```
+
+`job_batches` is only needed for `Queue.batch()`. An app that ran an older `queue:table` migration adds it in a new migration (see [Job batches](#job-batches)).
 
 ## Write a job
 
@@ -593,6 +597,165 @@ class UpdateSearchIndex extends DoxJob with ShouldBeUnique {
 - `Queue.fake()` keeps its own locks. `clear()` of the fake frees them.
 - When a worker crashes, or `clear` stops in the middle, the locks of those jobs are not freed. With no `uniqueFor` such a lock never ends: `dispatch()` keeps returning `''` until you delete the cache key (`dox_queue:unique:<job name>:<uniqueId>`). So set `uniqueFor` on unique jobs.
 
+## Job chains
+
+Run jobs one after the other, like Laravel `Bus::chain()`. The next job is pushed only when the job before it is done.
+
+```dart
+await Queue.chain(<DoxJob>[
+  ResizeImage(imageId: 1),
+  UploadImage(imageId: 1),
+  TellUser(imageId: 1),
+]).catchError(TellAdmin(imageId: 1)).dispatch(queue: 'images');
+```
+
+- The rest of the chain is saved in the payload of the job that runs now. So it works across worker processes and restarts.
+- A job that is released or retried keeps the chain. The chain goes on only after it is done.
+- A job that ends with `delete()`, or that a middleware skips, counts as done. The chain goes on.
+- When a job fails for good, the rest of the chain is dropped and the catch job runs.
+- `queue:retry` of the failed job brings the chain back: when it is then done, the chain goes on.
+- `dispatch()` returns the id of the first job. `queue` and `connection` count for every job. `delay` counts for the first job only.
+
+### The catch job
+
+A function can not be saved in the queue. So the catch handler is a job too, of a class in `jobRegistry`. It runs once, in the worker where the job failed, like `dispatchSync()`: no queue, no retry. Add the `CatchesError` mixin to read the error:
+
+```dart
+@Job()
+class TellAdmin extends DoxJob with CatchesError {
+  TellAdmin({required this.imageId});
+
+  final int imageId;
+
+  @override
+  Future<void> handle() async {
+    await alertAdmin('image $imageId failed: $caughtError');
+  }
+}
+```
+
+An error in the catch job is logged. For slow work, dispatch a new job from it.
+
+### Traps
+
+- Each job carries the data of the jobs after it. Keep chains short, and save ids, not big data, in the jobs.
+- `ShouldBeEncrypted` jobs stay encrypted inside the payload of the job before them.
+- A `ShouldBeUnique` job in the chain that is skipped (the same job is on the queue) stops the chain. The catch job runs with a `StateError`. When the first job is skipped, `dispatch()` returns `''` and nothing runs.
+- A next job that can not be read (eg. its class was removed) stops the chain. The catch job runs with the error.
+- The worker pushes the next job before it deletes the job that is done (like Laravel). When the push throws, the try counts as failed: the job is tried again (and runs again), and when no try is left it fails and the catch job runs. A worker that crashes between the push and the delete runs the job again, so the next job can run twice. Make jobs in a chain safe to run twice.
+- A failed push counts against the job even though its `handle()` worked: it gets an `exceptionOccurred` event and is released, and at the last try its `failed()` hook and the `failed` event run. With the default `tries` of 1 the first failed push does that, so give chain jobs more than one try.
+- The unique lock of a `ShouldBeUnique` job is freed before the next job is pushed, so a next job with the same unique id is not skipped. A retry after a failed push runs without the lock.
+- The `sync` driver runs the jobs now, one after the other. When one throws, the catch job runs and `dispatch()` throws the error.
+- `Queue.fake()` keeps the chain in `chains`. Its jobs are not in `pushed`.
+
+## Job batches
+
+Run many jobs as one batch, like Laravel `Bus::batch()`, and act when they are all done:
+
+```dart
+Batch batch = await Queue.batch(<DoxJob>[
+  ImportRows(from: 0),
+  ImportRows(from: 1000),
+  ImportRows(from: 2000),
+])
+    .name('import')
+    .then(ImportDone())
+    .catchError(ImportFailed())
+    .whenComplete(CleanUpImport())
+    .dispatch(queue: 'imports');
+
+print(batch.id);
+```
+
+| Callback | Runs |
+| --- | --- |
+| `before(job)` | once, at `dispatch()`, before the jobs are pushed |
+| `progress(job)` | each time a job is done (with `allowFailures()`, also when one fails) |
+| `then(job)` | once, when every job is done |
+| `catchError(job)` | once, when the first job fails for good |
+| `whenComplete(job)` | once, when every job ran (done or failed), like Laravel `finally` |
+
+A function can not be saved in the queue, so each callback is a job of a class in `jobRegistry`. It runs once, in the process where the step happened (the worker, or the app for `before`), like `dispatchSync()`: no queue, no retry. An error in it is logged. For slow work, dispatch a new job from it. Add `Batchable` to read the batch, and `CatchesError` to read the error:
+
+```dart
+@Job()
+class ImportFailed extends DoxJob with Batchable, CatchesError {
+  @override
+  Future<void> handle() async {
+    Batch? batch = await this.batch();
+    await alertAdmin('import ${batch?.name} failed: $caughtError');
+  }
+}
+```
+
+### The table
+
+Batches are saved in the `job_batches` table of the dox_orm connection of `QueueConfig.connection` (null: the default connection). This is also so with the Redis driver. New apps get it from `dox queue:table`. An app that ran an older `queue:table` migration adds a new one:
+
+```dart
+class CreateJobBatchesTable extends Migration {
+  @override
+  Future<void> up(Schema schema) async {
+    await QueueTables.upBatches(schema);
+  }
+
+  @override
+  Future<void> down(Schema schema) async {
+    await QueueTables.downBatches(schema);
+  }
+}
+```
+
+An app that does not use batches does not need the table.
+
+### Jobs of a batch
+
+Add the opt-in `Batchable` mixin to a job to read its batch. `batchId` is the id, `batch()` reads the batch as it is now. A job can skip its work when the batch was cancelled:
+
+```dart
+@Job()
+class ImportRows extends DoxJob with Batchable {
+  ImportRows({required this.from});
+
+  final int from;
+
+  @override
+  Future<void> handle() async {
+    Batch? batch = await this.batch();
+    if (batch?.cancelled ?? false) return;
+    await importRows(from);
+  }
+}
+```
+
+`Batch` has `id`, `name`, `totalJobs`, `pendingJobs`, `failedJobs`, `processedJobs`, `progress` (0 to 100), `finished`, `cancelled`, `cancel()` and `add(jobs)`. It is the batch as it was when it was read: read it again with `Queue.findBatch(id)`.
+
+- The first job that fails for good cancels the batch. Add `allowFailures()` to keep it going.
+- `cancel()` does not stop the jobs. They still run and count. A `Batchable` job reads `cancelled` to skip its work.
+- `add(jobs)` adds jobs, eg. from a job of the batch. They go on the queue and connection of the batch. It throws a `StateError` when the batch is finished, cancelled or deleted, and then pushes nothing.
+- `pendingJobs` counts the failed jobs too, as they can be retried (like Laravel). A failed job that you retry with `queue:retry` is marked in its payload. When it fails again, it is not counted again. When it is done, `pendingJobs` and `failedJobs` both go down by one. So `catchError` can run again when a later job fails.
+- An empty batch throws an `ArgumentError`: it would never finish.
+- Without the `job_batches` table, `dispatch()` throws a `StateError` that names `QueueTables.upBatches()`.
+- `finished` is true when every job ran (done or failed), or the batch was cancelled.
+- Each count is changed in one atomic step (`UPDATE ... RETURNING` on SQLite and Postgres, a transaction with a row lock on MySQL and MariaDB). So with many workers `then`, `catchError` and `whenComplete` still run once.
+
+### Traps
+
+- A `ShouldBeUnique` job that is skipped (the same job is on the queue) is taken out of `totalJobs` and `pendingJobs`. `progress` does not run for it. When it was the last open job, `then` and `whenComplete` run.
+- When a push throws in `dispatch()` or `add()`, the jobs that were not pushed are taken out of the counts, the batch is cancelled (so it is finished and can be pruned), and the error is thrown. No callback runs for those jobs. The jobs pushed before still run, and the callbacks still fire for them (also `then` and `whenComplete`), even though `dispatch()` threw. A `Batchable` job can read `cancelled` to skip its work.
+- The counts follow the at-least-once rule of the queue. A job that runs twice (eg. it ran longer than `retryAfter`, or a worker crashed in the middle of a fail) can be counted twice. `failedJobs` never goes below 0.
+- The batch is marked finished before `then` and `whenComplete` run, so `add()` from a callback (or from another process at that time) throws a `StateError`.
+- A worker that crashes after a job is done, and before it counted it, leaves the batch with that job pending. Then `then` and `whenComplete` never run. `prune-batches --unfinished=N` deletes such batches.
+- A chain inside a batch is not supported.
+- Batches do not use `afterCommit`: the batch is saved and its jobs are pushed at once.
+- The `sync` driver runs the jobs at `dispatch()`, one after the other, and counts them. A job that throws counts as failed: `dispatch()` does not throw. The table is still needed.
+- `Queue.fake()` keeps the batch in `batches`, and saves and runs nothing. Its jobs are not in `pushed`. `add()` adds to the faked batch, `cancel()` does nothing, and `Queue.findBatch()` gives null.
+- The queue events fire for the jobs of a batch like for any job. There are no batch events.
+
+### Prune old batches
+
+`dart run bin/queue.dart prune-batches --hours=48` deletes the batches that finished (or were cancelled) more than 48 hours ago. The default is 24. Opt-in `--unfinished=168` also deletes the batches that never finished and were made more than 168 hours ago. `Queue.pruneBatches(before, unfinishedBefore:)` does the same in code.
+
 ## Queue events
 
 Listen to the steps of a job, like Laravel `Queue::before()`:
@@ -899,6 +1062,9 @@ void main() {
 | `assertPushedTimes<T>(n)` | exactly `n` `T` jobs were pushed |
 | `assertNotPushed<T>()` | no `T` job was pushed |
 | `assertNothingPushed()` | no job was pushed at all |
+| `assertChained([A, B])` | a chain of exactly these job types, in this order, was dispatched |
+| `assertBatched([test])` | a batch was dispatched. With `test`, one of them passes it. |
+| `assertBatchCount(n)` | exactly `n` batches were dispatched |
 
 A failed check throws an `AssertionError` that says what was pushed.
 

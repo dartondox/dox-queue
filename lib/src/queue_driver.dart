@@ -13,6 +13,10 @@ class JobPayload {
     this.retryUntil,
     this.exceptions = 0,
     this.unique,
+    this.chain,
+    this.chainCatch,
+    this.batch,
+    this.batchFailed = false,
   });
 
   /// a random id, like `0f3c...`
@@ -41,6 +45,23 @@ class JobPayload {
   /// can not be read. Null: not a unique job (also for older jobs).
   final String? unique;
 
+  /// The jobs that run after this one in a chain (`Queue.chain()`), in
+  /// order. Each is a map of `job`, `queue` and `data`. Null: not in a
+  /// chain, or the last job of it.
+  final List<Map<String, Object?>>? chain;
+
+  /// the catch job of a chain (`job`, `queue` and `data`), or null
+  final Map<String, Object?>? chainCatch;
+
+  /// the id of the batch of the job (`Queue.batch()`), or null
+  final String? batch;
+
+  /// True for a job of a [batch] that failed for good and was retried
+  /// (`queue:retry`). The batch counted it as failed already: a new
+  /// failure is not counted again, and when it is done it is no longer
+  /// counted as failed.
+  final bool batchFailed;
+
   /// a new random id: 16 random bytes as hex
   static String newId() {
     Random random = Random.secure();
@@ -62,13 +83,17 @@ class JobPayload {
       retryUntil: retryUntil,
       exceptions: exceptions,
       unique: unique,
+      chain: chain,
+      chainCatch: chainCatch,
+      batch: batch,
+      batchFailed: batchFailed,
     );
   }
 
   /// A copy for `queue:retry`: a fresh start, like a new dispatch. No
   /// tries and no exceptions yet. The driver passes a new [retryUntil],
   /// read again from the job class with `Queue.retryUntilOf()`, so the
-  /// job gets a new time window.
+  /// job gets a new time window. A job of a batch gets [batchFailed].
   JobPayload retried({int? retryUntil}) {
     return JobPayload(
       id: id,
@@ -77,6 +102,10 @@ class JobPayload {
       data: data,
       retryUntil: retryUntil,
       unique: unique,
+      chain: chain,
+      chainCatch: chainCatch,
+      batch: batch,
+      batchFailed: batch != null,
     );
   }
 
@@ -91,12 +120,16 @@ class JobPayload {
       retryUntil: retryUntil,
       exceptions: exceptions,
       unique: unique,
+      chain: chain,
+      chainCatch: chainCatch,
+      batch: batch,
+      batchFailed: batchFailed,
     );
   }
 
-  /// [retryUntil], [exceptions] and [unique] are left out when not set,
-  /// so the text of a job with none of them is the same as before they
-  /// existed
+  /// [retryUntil], [exceptions], [unique], [chain], [chainCatch],
+  /// [batch] and [batchFailed] are left out when not set, so the text of a job with none
+  /// of them is the same as before they existed
   String encode() {
     return jsonEncode(<String, Object?>{
       'id': id,
@@ -107,6 +140,10 @@ class JobPayload {
       'retryUntil': ?retryUntil,
       if (exceptions > 0) 'exceptions': exceptions,
       'unique': ?unique,
+      'chain': ?chain,
+      'chainCatch': ?chainCatch,
+      'batch': ?batch,
+      if (batchFailed) 'batchFailed': true,
     });
   }
 
@@ -121,6 +158,10 @@ class JobPayload {
       retryUntil: (map['retryUntil'] as num?)?.toInt(),
       exceptions: (map['exceptions'] as num? ?? 0).toInt(),
       unique: map['unique'] as String?,
+      chain: (map['chain'] as List<Object?>?)?.cast<Map<String, Object?>>(),
+      chainCatch: map['chainCatch'] as Map<String, Object?>?,
+      batch: map['batch'] as String?,
+      batchFailed: map['batchFailed'] == true,
     );
   }
 }

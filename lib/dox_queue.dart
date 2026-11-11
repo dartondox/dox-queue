@@ -9,7 +9,7 @@ export 'src/drivers/redis_queue_driver.dart';
 export 'src/job.dart';
 export 'src/job_middleware.dart';
 export 'src/job_registry.dart';
-export 'src/queue.dart';
+export 'src/queue.dart' hide JobBus;
 export 'src/queue_config.dart';
 export 'src/queue_driver.dart';
 export 'src/queue_event.dart';

@@ -1,4 +1,5 @@
 import 'job.dart';
+import 'queue.dart';
 
 /// A job that `Queue.dispatch()` got while `Queue.fake()` was on.
 class PushedJob {
@@ -32,6 +33,14 @@ class QueueFake {
   /// every job of `dispatchAfterResponse()`, oldest first. The fake does
   /// not stop them: they still run. They are not in [pushed].
   final List<DoxJob> dispatchedAfterResponse = <DoxJob>[];
+
+  /// every chain of `Queue.chain(...).dispatch()`, oldest first. Its
+  /// jobs are not in [pushed].
+  final List<PendingChain> chains = <PendingChain>[];
+
+  /// every batch of `Queue.batch(...).dispatch()`, oldest first. Its
+  /// jobs are not in [pushed]. `Batch.add()` adds to its jobs.
+  final List<PendingBatch> batches = <PendingBatch>[];
 
   /// the unique locks of [ShouldBeUnique] jobs: key and end time (null:
   /// no end). The fake has no worker, so only [clear] frees them.
@@ -98,6 +107,55 @@ class QueueFake {
     }
   }
 
+  /// A chain of jobs of exactly these [types], in this order, was
+  /// dispatched.
+  /// ```
+  /// queue.assertChained(<Type>[ResizeImage, UploadImage]);
+  /// ```
+  void assertChained(List<Type> types) {
+    for (PendingChain chain in chains) {
+      List<Type> chained = <Type>[
+        for (DoxJob job in chain.jobs) job.runtimeType,
+      ];
+      if (_sameTypes(chained, types)) return;
+    }
+    String seen = chains.isEmpty
+        ? 'No chains were dispatched.'
+        : 'Chains: ${chains.map(_chainNames).join('; ')}.';
+    throw AssertionError(
+      'Expected a chain of ${types.join(', ')} to be dispatched. $seen',
+    );
+  }
+
+  /// A batch was dispatched. With [test], one of them must pass it.
+  /// ```
+  /// queue.assertBatched(
+  ///   (PendingBatch batch) => batch.batchName == 'import',
+  /// );
+  /// ```
+  void assertBatched([bool Function(PendingBatch batch)? test]) {
+    if (batches.isEmpty) {
+      throw AssertionError('Expected a batch to be dispatched, but none was.');
+    }
+    if (test != null && !batches.any(test)) {
+      throw AssertionError(
+        'Expected a batch that passes the test to be dispatched, but none '
+        'of the ${batches.length} ${_plural(batches.length, 'batch')} '
+        'passed it.',
+      );
+    }
+  }
+
+  /// Exactly [count] batches were dispatched. 0: none.
+  void assertBatchCount(int count) {
+    if (batches.length != count) {
+      throw AssertionError(
+        'Expected $count ${_plural(count, 'batch')} to be dispatched, but '
+        '${batches.length} ${batches.length == 1 ? 'was' : 'were'}.',
+      );
+    }
+  }
+
   /// No job was pushed at all.
   void assertNothingPushed() {
     if (pushed.isNotEmpty) {
@@ -105,10 +163,12 @@ class QueueFake {
     }
   }
 
-  /// forget the pushed jobs, the jobs of [dispatchedSync] and
-  /// [dispatchedAfterResponse], and the unique locks
+  /// forget the pushed jobs, the [chains] and [batches], the jobs of [dispatchedSync]
+  /// and [dispatchedAfterResponse], and the unique locks
   void clear() {
     pushed.clear();
+    chains.clear();
+    batches.clear();
     _uniqueLocks.clear();
     dispatchedSync.clear();
     dispatchedAfterResponse.clear();
@@ -139,8 +199,23 @@ class QueueFake {
   static String _times(int count) => '$count ${_plural(count, 'time')}';
 
   static String _plural(int count, String word) {
-    return count == 1 ? word : '${word}s';
+    if (count == 1) return word;
+    return word.endsWith('h') ? '${word}es' : '${word}s';
   }
+
+  static bool _sameTypes(List<Type> a, List<Type> b) {
+    if (a.length != b.length) return false;
+    for (int i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  static String _chainNames(PendingChain chain) {
+    return chain.jobs.map(_jobName).join(', ');
+  }
+
+  static String _jobName(DoxJob job) => '${job.runtimeType}';
 
   static String _name(PushedJob item) => '${item.job.runtimeType}';
 

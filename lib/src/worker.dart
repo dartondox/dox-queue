@@ -192,6 +192,7 @@ class Worker {
       QueueLog.danger('Queue: failed $label: $error');
       await driver.fail(reserved, '$error\n$stack');
       await _freeUnique(payload);
+      await JobBus.failed(payload, jobs, error);
       await _event(
         QueueEventType.failed,
         reserved,
@@ -201,9 +202,9 @@ class Worker {
       );
       return;
     }
+    JobBus.read(job, payload);
     await _event(QueueEventType.processing, reserved, job);
     if (job is ShouldBeUniqueUntilProcessing) await _freeUnique(payload);
-    int tries = job.tries ?? options.tries;
     if (reserved.attempts > 1 &&
         _noTryLeft(job, payload, reserved.attempts - 1)) {
       // a worker took it before and did not finish (it crashed or the
@@ -239,55 +240,95 @@ class Worker {
         return;
       }
       Object reason = error;
-      int exceptions = payload.exceptions;
       if (timedOut) {
         reason = TimeoutException('$label timed out after $timeout', timeout);
         if (run != null) await _waitForTimedOutRun(run, label);
-      } else {
-        exceptions++;
       }
-      ReservedJob next = ReservedJob(
-        payload.withExceptions(exceptions),
-        attempts: reserved.attempts,
-        ref: reserved.ref,
-      );
-      int? maxExceptions = job.maxExceptions;
-      if ((timedOut && job.failOnTimeout) ||
-          (maxExceptions != null && exceptions >= maxExceptions) ||
-          _noTryLeft(job, payload, reserved.attempts)) {
-        await _fail(next, job, label, reason, stack);
-        return;
-      }
-      Duration wait = backoffFor(job, reserved.attempts, options.backoff);
-      String of = payload.retryUntil == null ? ' of $tries' : '';
-      QueueLog.warn(
-        'Queue: $label failed try ${reserved.attempts}$of, '
-        'next try in $wait: $reason',
-      );
-      await _event(
-        QueueEventType.exceptionOccurred,
-        next,
-        job,
-        error: reason,
-        stack: stack,
-      );
-      await driver.release(next, wait);
-      await _event(QueueEventType.released, next, job, delay: wait);
+      await _tryFailed(reserved, job, label, reason, stack, timedOut: timedOut);
       return;
     }
     if (jobRun.action != null) {
       await _apply(jobRun, reserved, job, label);
       return;
     }
-    await _finish(reserved, job);
-    QueueLog.success('Queue: done $label in ${watch.elapsedMilliseconds}ms');
+    if (await _finish(reserved, job, label)) {
+      QueueLog.success('Queue: done $label in ${watch.elapsedMilliseconds}ms');
+    }
   }
 
-  /// the job ended: delete it and free its unique lock
-  Future<void> _finish(ReservedJob reserved, DoxJob job) async {
-    await driver.delete(reserved);
-    await _releaseUnique(reserved, job);
+  /// A try of the job failed with [reason]: release it for the next
+  /// try, or fail it when no try is left. A timeout does not count as
+  /// an exception.
+  Future<void> _tryFailed(
+    ReservedJob reserved,
+    DoxJob job,
+    String label,
+    Object reason,
+    StackTrace stack, {
+    bool timedOut = false,
+  }) async {
+    JobPayload payload = reserved.payload;
+    int exceptions = timedOut ? payload.exceptions : payload.exceptions + 1;
+    int tries = job.tries ?? options.tries;
+    ReservedJob next = ReservedJob(
+      payload.withExceptions(exceptions),
+      attempts: reserved.attempts,
+      ref: reserved.ref,
+    );
+    int? maxExceptions = job.maxExceptions;
+    if ((timedOut && job.failOnTimeout) ||
+        (maxExceptions != null && exceptions >= maxExceptions) ||
+        _noTryLeft(job, payload, reserved.attempts)) {
+      await _fail(next, job, label, reason, stack);
+      return;
+    }
+    Duration wait = backoffFor(job, reserved.attempts, options.backoff);
+    String of = payload.retryUntil == null ? ' of $tries' : '';
+    QueueLog.warn(
+      'Queue: $label failed try ${reserved.attempts}$of, '
+      'next try in $wait: $reason',
+    );
+    await _event(
+      QueueEventType.exceptionOccurred,
+      next,
+      job,
+      error: reason,
+      stack: stack,
+    );
+    await driver.release(next, wait);
+    await _event(QueueEventType.released, next, job, delay: wait);
+  }
+
+  /// The job ended: push the next job of its chain, delete it, free its
+  /// unique lock and count it in its batch. False when the push of the
+  /// next job threw: then the try counts as failed, so the push is tried
+  /// again with the job (like Laravel, the job runs again).
+  Future<bool> _finish(ReservedJob reserved, DoxJob job, String label) async {
+    JobPayload payload = reserved.payload;
+    if (payload.chain?.isNotEmpty ?? false) {
+      // free the lock first, so a next job of the same unique id is not
+      // skipped because of this job. A retry then runs without the lock.
+      await _releaseUnique(reserved, job);
+      try {
+        await JobBus.next(payload, driver, jobs);
+      } catch (error, stack) {
+        await _tryFailed(
+          reserved,
+          job,
+          label,
+          StateError('can not push the next job of the chain: $error'),
+          stack,
+        );
+        return false;
+      }
+      await driver.delete(reserved);
+    } else {
+      await driver.delete(reserved);
+      await _releaseUnique(reserved, job);
+    }
+    await JobBus.done(payload, jobs);
     await _event(QueueEventType.processed, reserved, job);
+    return true;
   }
 
   /// fire a queue event of [reserved]
@@ -344,8 +385,9 @@ class Worker {
           delay: jobRun.delay,
         );
       case JobAction.delete:
-        await _finish(reserved, job);
-        QueueLog.info('Queue: $label deleted by the job');
+        if (await _finish(reserved, job, label)) {
+          QueueLog.info('Queue: $label deleted by the job');
+        }
       case JobAction.fail:
         await _fail(reserved, job, label, jobRun.error!, jobRun.stack!);
     }
@@ -423,6 +465,7 @@ class Worker {
         '$hookStack',
       );
     }
+    await JobBus.failed(reserved.payload, jobs, error);
     await _event(
       QueueEventType.failed,
       reserved,
