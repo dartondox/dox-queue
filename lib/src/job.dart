@@ -116,11 +116,15 @@ abstract class DoxJob {
   ///
   /// Opt-in [connection]: a name of `QueueConfig.connections`, like
   /// Laravel `onConnection('redis')`. Null: the main connection.
+  ///
+  /// Opt-in [afterCommit]: inside a dox_orm transaction, push the job
+  /// only after it commits. See `Queue.dispatch`.
   Future<String> dispatch({
     Duration? delay,
     String? queue,
     DateTime? delayUntil,
     String? connection,
+    bool? afterCommit,
   }) {
     return Queue.dispatch(
       this,
@@ -128,6 +132,7 @@ abstract class DoxJob {
       queue: queue,
       delayUntil: delayUntil,
       connection: connection,
+      afterCommit: afterCommit,
     );
   }
 
@@ -142,6 +147,7 @@ abstract class DoxJob {
     String? queue,
     DateTime? delayUntil,
     String? connection,
+    bool? afterCommit,
   }) async {
     if (!condition) return null;
     return dispatch(
@@ -149,6 +155,7 @@ abstract class DoxJob {
       queue: queue,
       delayUntil: delayUntil,
       connection: connection,
+      afterCommit: afterCommit,
     );
   }
 
@@ -160,6 +167,7 @@ abstract class DoxJob {
     String? queue,
     DateTime? delayUntil,
     String? connection,
+    bool? afterCommit,
   }) {
     return dispatchIf(
       !condition,
@@ -167,6 +175,7 @@ abstract class DoxJob {
       queue: queue,
       delayUntil: delayUntil,
       connection: connection,
+      afterCommit: afterCommit,
     );
   }
 

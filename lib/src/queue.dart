@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:dox_core/dox_core.dart' show AESEncryptor, AfterResponse, Dox;
 import 'package:dox_mailer/dox_mailer.dart'
     show ArrayTransport, Mail, MailQueue;
+import 'package:dox_orm/dox_orm.dart' show DBDriver, QueryBuilder;
 
 import 'job.dart';
 import 'job_registry.dart';
@@ -137,12 +138,20 @@ class Queue {
   ///
   /// Opt-in [connection]: a name of [QueueConfig.connections], like
   /// Laravel `onConnection()`. Null: the main connection.
+  ///
+  /// Opt-in [afterCommit]: inside a transaction of the default dox_orm
+  /// connection, the job is pushed (or run, with `sync`) only after that
+  /// transaction commits. A rollback drops it. Outside a transaction it
+  /// is pushed at once. Null: [QueueConfig.afterCommit]. `false` wins
+  /// over the setting, like Laravel `beforeCommit()`. The job id is
+  /// known at once, so it is returned at once.
   static Future<String> dispatch(
     DoxJob job, {
     Duration? delay,
     String? queue,
     DateTime? delayUntil,
     String? connection,
+    bool? afterCommit,
   }) async {
     if (delayUntil != null) {
       if (delay != null) {
@@ -166,21 +175,52 @@ class Queue {
     JobRegistry jobs = config.jobs;
     QueueConfig settings = config.connectionOf(connection);
     String id = JobPayload.newId();
+    if ((afterCommit ?? config.afterCommit) && DBDriver.inTransaction) {
+      // a wrong job or a value that is not JSON throws now, not at commit
+      JobPayload? payload = settings.driver != 'sync' || settings.serializeSync
+          ? _payload(job, id, queue, jobs)
+          : null;
+      // ponytail: waits for the default dox_orm connection only
+      await QueryBuilder.afterCommit(
+        () => _send(job, payload, settings, connection, delay),
+      );
+      return id;
+    }
     if (settings.driver == 'sync') {
       if (!settings.serializeSync) {
         await _runNow(job);
         return id;
       }
-      // save and read back, like a worker gets the job
-      JobPayload saved = JobPayload.decode(
-        _payload(job, id, queue, jobs).encode(),
+      await _send(
+        job,
+        _payload(job, id, queue, jobs),
+        settings,
+        connection,
+        delay,
       );
-      await _runNow(_decode(jobs, saved));
       return id;
     }
     JobPayload payload = _payload(job, id, queue, jobs);
-    await driverOf(connection).push(payload, delay: delay ?? Duration.zero);
+    await _send(job, payload, settings, connection, delay);
     return id;
+  }
+
+  /// Push [payload], or run the job with the `sync` driver. [payload] is
+  /// null only for `sync` without `serializeSync`: then [job] runs as it is.
+  static Future<void> _send(
+    DoxJob job,
+    JobPayload? payload,
+    QueueConfig settings,
+    String? connection,
+    Duration? delay,
+  ) async {
+    if (settings.driver == 'sync') {
+      if (payload == null) return _runNow(job);
+      // save and read back, like a worker gets the job
+      JobPayload saved = JobPayload.decode(payload.encode());
+      return _runNow(_decode(config.jobs, saved));
+    }
+    await driverOf(connection).push(payload!, delay: delay ?? Duration.zero);
   }
 
   /// [job] as it is saved on the queue

@@ -39,6 +39,7 @@ class QueueConfig {
     this.workerTimeoutGrace,
     this.serializeSync = false,
     this.connections = const <String, QueueConfig>{},
+    this.afterCommit = false,
   });
 
   /// `sync`, `redis` or `database`.
@@ -104,6 +105,14 @@ class QueueConfig {
   /// connection. If they share, `failed --connection=X` lists all failed
   /// jobs of the table.
   final Map<String, QueueConfig> connections;
+
+  /// Opt-in: the default of `dispatch(afterCommit:)` for every dispatch,
+  /// like Laravel `after_commit`. True: a job dispatched inside a
+  /// transaction of the default dox_orm connection is pushed only after
+  /// that transaction commits, and a rollback drops it. False (the
+  /// default): the job is pushed at once. Only the main config counts,
+  /// not the entries of [connections].
+  final bool afterCommit;
 
   /// The config of the queue connection [name]. Null: this config, the
   /// main connection. Throws an [ArgumentError] for an unknown name.

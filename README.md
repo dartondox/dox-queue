@@ -56,6 +56,7 @@ QueueConfig queueConfig = QueueConfig(
 | `workerTimeoutGrace` | off | opt-in: after a timeout, the in-process worker waits up to this long for the old run (see Retries) |
 | `serializeSync` | `false` | opt-in: the `sync` driver saves the job and reads it back before it runs, see [Sync](#sync) |
 | `connections` | none | opt-in: more queue connections by name, see [Queue connections](#queue-connections) |
+| `afterCommit` | `false` | opt-in: push jobs that are dispatched inside a transaction only after it commits, see [Dispatch after the commit](#dispatch-after-the-commit) |
 
 > **Keep `retryAfter` bigger than your longest job**
 > `retryAfter` is how Dox finds the job of a crashed worker.
@@ -302,6 +303,39 @@ SendWelcomeEmail(userId: 1).dispatchAfterResponse();
 ```
 
 It does not go on the queue, so there is no job id and no retry. When the server stops, a job that did not run yet is lost.
+
+### Dispatch after the commit
+
+A job that you dispatch inside a database transaction is pushed at once.
+A worker can run it before the transaction commits, or after it rolls back.
+Then the job reads data that is not saved yet, or data that is never saved.
+
+`afterCommit: true` waits for the commit:
+
+```dart
+await QueryBuilder.transaction(() async {
+  User user = await User().create(<String, dynamic>{'email': email});
+  await SendWelcomeEmail(userId: user.id).dispatch(afterCommit: true);
+});
+```
+
+- Inside a transaction, the job is pushed after the outermost transaction commits.
+- When the transaction rolls back, the job is not pushed.
+- Outside a transaction, the job is pushed at once.
+- `dispatch()` returns the job id at once. The id is made before the push.
+- A job that is not in the registry, or data that is not JSON, throws at `dispatch()`, not at the commit.
+- When the push fails after the commit, the `QueryBuilder.transaction()` call throws that error. The data stays saved.
+- The `sync` driver runs the job after the commit.
+- It waits only for a transaction on the default dox_orm connection, opened with no `connection:` name. A transaction opened by name pushes the job at once, also when the name is the one of the default connection.
+- `dispatchIf()`, `dispatchUnless()` and `Queue.dispatch()` take `afterCommit` too.
+- `dispatchSync()` and `dispatchAfterResponse()` run the job as before. They do not wait for a commit.
+
+Turn it on for every dispatch with `QueueConfig(afterCommit: true)`.
+Then `afterCommit: false` on one dispatch pushes that job at once.
+
+`Queue.fake()` keeps the job when you call `dispatch()`, also when the transaction later rolls back.
+
+It uses `QueryBuilder.afterCommit()` of dox_orm.
 
 ### Queue an email
 
