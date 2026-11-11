@@ -100,8 +100,9 @@ class QueueConfig {
   /// this config count for all connections.
   ///
   /// Two `database` connections on the same dox_orm [connection] share
-  /// the `jobs` table. Give each its own dox_orm connection, or use
-  /// other queue names.
+  /// the `jobs` and `failed_jobs` tables. Give each its own dox_orm
+  /// connection. If they share, `failed --connection=X` lists all failed
+  /// jobs of the table.
   final Map<String, QueueConfig> connections;
 
   /// The config of the queue connection [name]. Null: this config, the

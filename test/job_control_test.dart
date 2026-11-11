@@ -9,14 +9,20 @@ import 'support.dart';
 
 /// Calls `release()`, `fail()` or `delete()` in `handle()`, by [mode].
 /// Logs `attempts()` of each run in `JobLog.handled`.
-class ControlJob extends DoxJob {
+class ControlJob extends DoxJob with InteractsWithQueue {
   ControlJob(this.mode);
 
-  /// `release-once`, `fail`, `delete`, `release-then-throw` or `plain`
+  /// `release-once`, `fail`, `delete`, `release-then-throw`,
+  /// `fail-then-throw`, `release-then-delete`, `release-then-hang`,
+  /// `release-default-tries` or `plain`
   final String mode;
 
   @override
-  int get tries => 3;
+  int get tries => mode == 'release-default-tries' ? 1 : 3;
+
+  @override
+  Duration? get timeout =>
+      mode == 'release-then-hang' ? const Duration(milliseconds: 50) : null;
 
   @override
   Future<void> handle() async {
@@ -32,6 +38,17 @@ class ControlJob extends DoxJob {
         this.fail();
       case 'delete':
         delete();
+      case 'fail-then-throw':
+        this.fail(StateError('stop'));
+        throw StateError('after fail');
+      case 'release-then-delete':
+        release();
+        delete();
+      case 'release-then-hang':
+        release();
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      case 'release-default-tries':
+        release();
       case 'release-then-throw':
         if (attempt == 1) {
           release();
@@ -70,6 +87,21 @@ class RawJob extends DoxJob {
   }
 
   static DoxJob decode(Map<String, Object?> data) => RawJob(data['value']!);
+}
+
+/// Without the mixin, members of these names still compile, like the
+/// jobs of dox-test (`static void release()`, a field `attempts`).
+class OwnNamesJob extends DoxJob {
+  const OwnNamesJob({this.attempts = 0, this.delete = false, this.fail = ''});
+
+  final int attempts;
+  final bool delete;
+  final String fail;
+
+  static void release() {}
+
+  @override
+  Future<void> handle() async {}
 }
 
 /// a job that is not in the registry
@@ -184,6 +216,47 @@ void main() {
         expect(JobLog.failed, isEmpty);
         expect(await Queue.driver.failed(), isEmpty);
       });
+
+      test('fail() wins over an error thrown after it', () async {
+        await ControlJob('fail-then-throw').dispatch();
+        await work();
+        expect(JobLog.handled, <String>['fail-then-throw 1']);
+        expect(JobLog.failed, <String>['fail-then-throw: Bad state: stop']);
+        expect(await Queue.driver.failed(), hasLength(1));
+      });
+
+      test('delete() after release(): the last call wins', () async {
+        await ControlJob('release-then-delete').dispatch();
+        await work();
+        expect(JobLog.handled, <String>['release-then-delete 1']);
+        expect(JobLog.failed, isEmpty);
+        expect(await Queue.driver.pop('default'), isNull);
+        expect(await Queue.driver.failed(), isEmpty);
+      });
+
+      test(
+        'default tries (1): release() fails the job on the next pickup',
+        () async {
+          await ControlJob('release-default-tries').dispatch();
+          await work();
+          expect(JobLog.handled, <String>['release-default-tries 1']);
+          expect(JobLog.failed, hasLength(1));
+          expect(JobLog.failed.first, contains('did not finish'));
+          expect(await Queue.driver.failed(), hasLength(1));
+        },
+      );
+
+      test('a timeout drops release(): the timeout rules count', () async {
+        await ControlJob('release-then-hang').dispatch();
+        await work();
+        // three tries that time out, then it fails with the timeout. A
+        // release() that wins would fail it as "did not finish".
+        List<FailedJob> failed = await Queue.driver.failed();
+        expect(failed, hasLength(1));
+        expect(failed.first.error, startsWith('TimeoutException'));
+        // let the hanging runs end
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      });
     }, skip: store.skip);
   }
 
@@ -204,6 +277,11 @@ void main() {
         'fail: Bad state: stop',
         'fail: Bad state: stop',
       ]);
+    });
+
+    test('a job without the mixin keeps its own member names', () async {
+      OwnNamesJob.release();
+      await const OwnNamesJob(attempts: 2).dispatchSync();
     });
 
     test('a call on a job that does not run does nothing', () {
@@ -249,7 +327,7 @@ void main() {
 }
 
 /// releases with a delay of 300ms on the first run
-class _DelayedRelease extends DoxJob {
+class _DelayedRelease extends DoxJob with InteractsWithQueue {
   @override
   int get tries => 3;
 

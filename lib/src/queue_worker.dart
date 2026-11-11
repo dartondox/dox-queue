@@ -215,7 +215,7 @@ Flags of work:
     }
     Logger.info(
       'Queue: worker started on ${options.queues.join(', ')} '
-      '(${connection ?? 'main connection'}, $driverName, '
+      '(${connection == null ? '' : '$connection, '}$driverName, '
       'concurrency ${options.concurrency})',
     );
     await worker.run();

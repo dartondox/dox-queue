@@ -35,7 +35,8 @@ class DatabaseQueueDriver extends QueueDriver {
 
   /// true when `failed_jobs` has the `connection` column. Read once, on
   /// the first failed job of a named connection. A table made before
-  /// the column existed works without it.
+  /// the column existed works without it. After you add the column,
+  /// restart the workers.
   bool? _hasConnectionColumn;
 
   static const String jobsTable = 'jobs';

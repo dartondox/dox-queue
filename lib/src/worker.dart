@@ -198,8 +198,8 @@ class Worker {
         payload.retryUntil != null
             ? '$label is past its retryUntil time.'
             : '$label was tried ${reserved.attempts - 1} times and did not '
-                  'finish. The job called release(), or the worker may '
-                  'have crashed, or the job ran longer than retryAfter.',
+                  'finish. The worker may have crashed, or the job ran '
+                  'longer than retryAfter.',
       );
       await _fail(reserved, job, label, error, StackTrace.current);
       return;
@@ -213,8 +213,11 @@ class Worker {
       run = jobRun.handle(job);
       await run.timeout(timeout);
     } catch (error, stack) {
-      if (jobRun.action != null) {
-        // the job asked for release, fail or delete: that wins
+      bool timedOut = error is TimeoutException;
+      // handle() ended with an error after release, fail or delete: the
+      // call wins. On a timeout the call is dropped: the timeout rules
+      // count, as for any job.
+      if (!timedOut && jobRun.action != null) {
         QueueLog.warn(
           'Queue: $label threw after ${jobRun.action!.name}(): $error',
         );
@@ -222,7 +225,6 @@ class Worker {
         return;
       }
       Object reason = error;
-      bool timedOut = error is TimeoutException;
       int exceptions = payload.exceptions;
       if (timedOut) {
         reason = TimeoutException('$label timed out after $timeout', timeout);
