@@ -94,6 +94,48 @@ void main() {
       });
     });
 
+    test('a push that fails after the commit throws, the data stays', () async {
+      // the dox_orm connection 'missing' does not exist, so the push fails
+      Queue.configure(
+        QueueConfig(
+          driver: 'database',
+          jobs: jobRegistry,
+          connection: 'missing',
+        ),
+      );
+      await QueryBuilder.query(
+        'CREATE TABLE IF NOT EXISTS ac_rows (id INTEGER)',
+      );
+      await QueryBuilder.query('DELETE FROM ac_rows');
+      await expectLater(
+        QueryBuilder.transaction(() async {
+          await QueryBuilder.query('INSERT INTO ac_rows (id) VALUES (1)');
+          await SendWelcomeEmail(userId: 1).dispatch(afterCommit: true);
+        }),
+        throwsA(anything),
+      );
+      List<Map<String, dynamic>> rows = await QueryBuilder.query(
+        'SELECT id FROM ac_rows',
+      );
+      expect(rows, hasLength(1));
+    });
+
+    test('a deferred push goes to the named queue connection', () async {
+      Queue.configure(
+        QueueConfig(
+          jobs: jobRegistry,
+          connections: <String, QueueConfig>{'db': _database()},
+        ),
+      );
+      await QueryBuilder.transaction(() async {
+        await SendWelcomeEmail(userId: 1)
+            .dispatch(connection: 'db', afterCommit: true);
+        expect(await Queue.driverOf('db').pop('default'), isNull);
+      });
+      expect(await Queue.driverOf('db').pop('default'), isNotNull);
+      expect(JobLog.handled, isEmpty);
+    });
+
     test('a job that is not in the registry throws at dispatch', () async {
       Queue.configure(QueueConfig(driver: 'database', connection: 'sqlite'));
       await expectLater(
