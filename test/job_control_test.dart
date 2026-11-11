@@ -19,7 +19,10 @@ class ControlJob extends DoxJob with InteractsWithQueue {
   final String mode;
 
   @override
-  int get tries => mode == 'release-default-tries' ? 1 : 3;
+  int get tries =>
+      mode == 'release-default-tries' || mode == 'release-then-own-timeout'
+      ? 1
+      : 3;
 
   @override
   Duration? get timeout =>
@@ -265,14 +268,18 @@ void main() {
       });
 
       test('release() wins over a TimeoutException of the job', () async {
+        // tries is 1: if the TimeoutException won, the job would fail now
         await ControlJob('release-then-own-timeout').dispatch();
-        await work();
-        expect(JobLog.handled, <String>[
-          'release-then-own-timeout 1',
-          'release-then-own-timeout 2',
-        ]);
+        await Worker(
+          driver: Queue.driver,
+          jobs: registry,
+          options: const WorkerOptions(once: true),
+        ).run();
+        expect(JobLog.handled, <String>['release-then-own-timeout 1']);
         expect(JobLog.failed, isEmpty);
         expect(await Queue.driver.failed(), isEmpty);
+        ReservedJob? released = await Queue.driver.pop('default');
+        expect(released?.attempts, 2);
       });
     }, skip: store.skip);
   }
