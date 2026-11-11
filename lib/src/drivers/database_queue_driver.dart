@@ -21,11 +21,23 @@ class DatabaseQueueDriver extends QueueDriver {
   DatabaseQueueDriver({
     this.connection,
     this.retryAfter = const Duration(seconds: 90),
+    this.queueConnection,
   });
 
   /// the dox_orm connection name. Null: the default connection.
   final String? connection;
   final Duration retryAfter;
+
+  /// The name of the queue connection (see `QueueConfig.connections`).
+  /// A failed job saves it in `failed_jobs.connection`, when the table
+  /// has that column. Null: the main connection, the column stays NULL.
+  final String? queueConnection;
+
+  /// true when `failed_jobs` has the `connection` column. Read once, on
+  /// the first failed job of a named connection. A table made before
+  /// the column existed works without it. After you add the column,
+  /// restart the workers.
+  bool? _hasConnectionColumn;
 
   static const String jobsTable = 'jobs';
   static const String failedTable = 'failed_jobs';
@@ -128,12 +140,24 @@ class DatabaseQueueDriver extends QueueDriver {
   Future<void> fail(ReservedJob job, String error) async {
     DBDriver db = _db;
     JobPayload payload = job.payload.withAttempts(job.attempts);
+    String? name = queueConnection;
+    // outside the transaction: on Postgres a failed query there would
+    // break it. The main connection never reads it: NULL is the default.
+    bool withName =
+        name != null &&
+        (_hasConnectionColumn ??= await Schema(db)
+            .hasColumn(failedTable, 'connection'));
     await db.transaction(() async {
       await db.execute(
-        'INSERT INTO $failedTable (uuid, queue, payload, exception, '
-        'failed_at) VALUES (@uuid, @queue, @payload, @error, @now)',
+        withName
+            ? 'INSERT INTO $failedTable (uuid, connection, queue, payload, '
+                  'exception, failed_at) VALUES (@uuid, @connection, @queue, '
+                  '@payload, @error, @now)'
+            : 'INSERT INTO $failedTable (uuid, queue, payload, exception, '
+                  'failed_at) VALUES (@uuid, @queue, @payload, @error, @now)',
         substitutionValues: <String, dynamic>{
           'uuid': payload.id,
+          'connection': ?(withName ? name : null),
           'queue': payload.queue,
           'payload': payload.encode(),
           'error': error,

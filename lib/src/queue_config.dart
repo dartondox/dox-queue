@@ -15,6 +15,16 @@ import 'worker.dart';
 ///   redis: RedisOptions(host: 'localhost', port: 6379),
 /// );
 /// ```
+/// Opt-in: more queue connections, by name, in [connections]:
+/// ```
+/// QueueConfig queueConfig = QueueConfig(
+///   driver: 'redis',
+///   jobs: jobRegistry,
+///   connections: <String, QueueConfig>{
+///     'database': QueueConfig(driver: 'database'),
+///   },
+/// );
+/// ```
 class QueueConfig {
   QueueConfig({
     this.driver = 'sync',
@@ -27,6 +37,8 @@ class QueueConfig {
     this.workerQueues = const <String>['default'],
     this.workerConcurrency = 1,
     this.workerTimeoutGrace,
+    this.serializeSync = false,
+    this.connections = const <String, QueueConfig>{},
   });
 
   /// `sync`, `redis` or `database`.
@@ -70,9 +82,49 @@ class QueueConfig {
   /// Null (the default): no wait after a timeout.
   final Duration? workerTimeoutGrace;
 
+  /// Opt-in, for the `sync` driver: before the job runs, save it like
+  /// a real queue does (the job registry, JSON, encryption) and read it
+  /// back. So a test finds a job that is not in the registry, or a field
+  /// that is not JSON, and the job runs as a worker would get it.
+  /// False (the default): the job object runs as it is.
+  final bool serializeSync;
+
+  /// Opt-in: more queue connections, by name, like Laravel
+  /// `connections`. This config is the main connection: it is used when
+  /// no connection is named. Pick another one with
+  /// `dispatch(connection: 'database')` and the worker flag
+  /// `--connection=database`.
+  ///
+  /// Each entry uses only its [driver], [redis], [prefix],
+  /// [connection], [retryAfter] and [serializeSync]. The [jobs] of
+  /// this config count for all connections.
+  ///
+  /// Two `database` connections on the same dox_orm [connection] share
+  /// the `jobs` and `failed_jobs` tables. Give each its own dox_orm
+  /// connection. If they share, `failed --connection=X` lists all failed
+  /// jobs of the table.
+  final Map<String, QueueConfig> connections;
+
+  /// The config of the queue connection [name]. Null: this config, the
+  /// main connection. Throws an [ArgumentError] for an unknown name.
+  QueueConfig connectionOf(String? name) {
+    if (name == null) return this;
+    QueueConfig? config = connections[name];
+    if (config == null) {
+      throw ArgumentError.value(
+        name,
+        'connection',
+        'is not in QueueConfig.connections',
+      );
+    }
+    return config;
+  }
+
   /// the driver of [driver]. Throws an [ArgumentError] for `sync` and
-  /// unknown names.
-  QueueDriver createDriver() {
+  /// unknown names. [name] is the name of the queue connection in
+  /// [connections] (null: the main connection). The `database` driver
+  /// saves it in `failed_jobs.connection`.
+  QueueDriver createDriver({String? name}) {
     switch (driver) {
       case 'redis':
         return RedisQueueDriver(
@@ -84,6 +136,7 @@ class QueueConfig {
         return DatabaseQueueDriver(
           connection: connection,
           retryAfter: retryAfter,
+          queueConnection: name,
         );
     }
     throw ArgumentError.value(

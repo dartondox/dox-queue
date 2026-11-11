@@ -4,6 +4,7 @@ import 'dart:io' show ProcessInfo;
 
 import 'job.dart';
 import 'job_registry.dart';
+import 'job_run.dart';
 import 'queue.dart';
 import 'queue_driver.dart';
 import 'queue_log.dart';
@@ -207,12 +208,23 @@ class Worker {
     Stopwatch watch = Stopwatch()..start();
     QueueLog.info('Queue: running $label');
     Future<void>? run;
+    JobRun jobRun = JobRun(reserved.attempts);
     try {
-      run = job.handle();
+      run = jobRun.handle(job);
       await run.timeout(timeout);
     } catch (error, stack) {
-      Object reason = error;
       bool timedOut = error is TimeoutException;
+      // handle() ended with an error after release, fail or delete: the
+      // call wins, also over its own TimeoutException. When the worker
+      // timeout fired, the call is dropped: the timeout rules count.
+      if (jobRun.ended && jobRun.action != null) {
+        QueueLog.warn(
+          'Queue: $label threw after ${jobRun.action!.name}(): $error',
+        );
+        await _apply(jobRun, reserved, job, label);
+        return;
+      }
+      Object reason = error;
       int exceptions = payload.exceptions;
       if (timedOut) {
         reason = TimeoutException('$label timed out after $timeout', timeout);
@@ -241,8 +253,31 @@ class Worker {
       await driver.release(next, wait);
       return;
     }
+    if (jobRun.action != null) {
+      await _apply(jobRun, reserved, job, label);
+      return;
+    }
     await driver.delete(reserved);
     QueueLog.success('Queue: done $label in ${watch.elapsedMilliseconds}ms');
+  }
+
+  /// do what the job asked for with `release()`, `fail()` or `delete()`
+  Future<void> _apply(
+    JobRun jobRun,
+    ReservedJob reserved,
+    DoxJob job,
+    String label,
+  ) async {
+    switch (jobRun.action!) {
+      case JobAction.release:
+        QueueLog.info('Queue: $label released, next try in ${jobRun.delay}');
+        await driver.release(reserved, jobRun.delay);
+      case JobAction.delete:
+        await driver.delete(reserved);
+        QueueLog.info('Queue: $label deleted by the job');
+      case JobAction.fail:
+        await _fail(reserved, job, label, jobRun.error!, jobRun.stack!);
+    }
   }
 
   /// With [WorkerOptions.timeoutGrace], wait until the timed-out [run]

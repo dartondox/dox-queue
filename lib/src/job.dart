@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'job_run.dart';
 import 'queue.dart';
 
 /// Marks a background job. `dart run build_runner build` finds every
@@ -51,6 +52,9 @@ abstract class DoxJob {
 
   /// The work of the job. When it throws, the worker tries again (see
   /// [tries] and [backoff]). After the last try it calls [failed].
+  ///
+  /// With the [InteractsWithQueue] mixin, the job can call `attempts()`,
+  /// `release()`, `fail()` and `delete()` inside it.
   Future<void> handle();
 
   /// How many times the worker runs the job before it fails.
@@ -109,16 +113,21 @@ abstract class DoxJob {
   ///   delayUntil: DateTime.utc(2030, 1, 1, 9),
   /// );
   /// ```
+  ///
+  /// Opt-in [connection]: a name of `QueueConfig.connections`, like
+  /// Laravel `onConnection('redis')`. Null: the main connection.
   Future<String> dispatch({
     Duration? delay,
     String? queue,
     DateTime? delayUntil,
+    String? connection,
   }) {
     return Queue.dispatch(
       this,
       delay: delay,
       queue: queue,
       delayUntil: delayUntil,
+      connection: connection,
     );
   }
 
@@ -132,9 +141,15 @@ abstract class DoxJob {
     Duration? delay,
     String? queue,
     DateTime? delayUntil,
+    String? connection,
   }) async {
     if (!condition) return null;
-    return dispatch(delay: delay, queue: queue, delayUntil: delayUntil);
+    return dispatch(
+      delay: delay,
+      queue: queue,
+      delayUntil: delayUntil,
+      connection: connection,
+    );
   }
 
   /// [dispatch] when [condition] is false. Returns the job id, or null
@@ -144,12 +159,14 @@ abstract class DoxJob {
     Duration? delay,
     String? queue,
     DateTime? delayUntil,
+    String? connection,
   }) {
     return dispatchIf(
       !condition,
       delay: delay,
       queue: queue,
       delayUntil: delayUntil,
+      connection: connection,
     );
   }
 
@@ -191,3 +208,62 @@ abstract class DoxJob {
 /// with the same key, or one of `AppConfig.previousKeys`. The job name,
 /// queue and id stay plain text.
 mixin ShouldBeEncrypted on DoxJob {}
+
+/// Opt-in: lets a job control its own run inside `handle()`, like
+/// Laravel `InteractsWithQueue`: [attempts], [release], [fail] and
+/// [delete]. Jobs without it work as before.
+/// ```
+/// @Job()
+/// class SendReport extends DoxJob with InteractsWithQueue { ... }
+/// ```
+/// The worker does the call when `handle()` ends (returns or throws).
+/// The last call wins. When `handle()` times out, the call is dropped
+/// and the timeout rules count.
+///
+/// In a test file, `package:test` has a top-level `fail(message)`. Inside
+/// a job class with this mixin, a bare `fail(...)` calls the job method.
+/// Write `this.fail(...)` to make clear which one you mean.
+mixin InteractsWithQueue on DoxJob {
+  /// How many times a worker took this job, this time included. The
+  /// first run gives 1. Outside a worker (eg. `dispatchSync()` or the
+  /// `sync` driver) it is always 1.
+  int attempts() => JobRun.of(this)?.attempts ?? 1;
+
+  /// Opt-in: put the job back on its queue, to run again after [delay].
+  /// The worker does it when `handle()` ends. It does not call `failed()`.
+  /// The next run counts as a new try, so it uses up `tries`. The
+  /// default `tries` is 1: then the next pickup fails the job. Set
+  /// `tries` above 1 (or `retryUntil`) when a job calls `release()`.
+  /// Outside a worker it does nothing.
+  /// ```
+  /// if (await api.isBusy()) {
+  ///   release(Duration(seconds: 30));
+  ///   return;
+  /// }
+  /// ```
+  void release([Duration delay = Duration.zero]) {
+    JobRun? run = JobRun.of(this);
+    if (run == null) return;
+    run.action = JobAction.release;
+    run.delay = delay;
+  }
+
+  /// Opt-in: fail the job now, with no retry. When `handle()` ends, the
+  /// worker moves it to the failed jobs and calls `failed()` with [error].
+  /// No [error]: a [StateError] that says the job called `fail()`.
+  /// Outside a worker (`dispatchSync()`, the `sync` driver) only
+  /// `failed()` runs, and nothing is thrown.
+  void fail([Object? error]) {
+    JobRun? run = JobRun.of(this);
+    if (run == null) return;
+    run.action = JobAction.fail;
+    run.error = error ?? StateError('$runtimeType called fail().');
+    run.stack = StackTrace.current;
+  }
+
+  /// Opt-in: delete the job from the queue when `handle()` ends, with no
+  /// retry and no `failed()` call. Outside a worker it does nothing.
+  void delete() {
+    JobRun.of(this)?.action = JobAction.delete;
+  }
+}

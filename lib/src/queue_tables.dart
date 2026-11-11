@@ -39,9 +39,14 @@ class QueueTables {
     table.bigInteger('created_at');
   }
 
+  /// `connection` is the name of the queue connection of
+  /// `QueueConfig.connections`, NULL for the main connection. A table
+  /// without it works too: add it with
+  /// `table.string('connection').nullable()` in a new migration.
   static void _failedJobs(Table table) {
     table.id();
     table.string('uuid').unique();
+    table.string('connection').nullable();
     table.string('queue');
     table.longText('payload');
     table.longText('exception');

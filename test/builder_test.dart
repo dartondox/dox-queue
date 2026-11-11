@@ -21,6 +21,9 @@ abstract class DoxJob {
   String get queue => 'default';
   void failed(Object error, StackTrace stack) {}
 }
+mixin InteractsWithQueue on DoxJob {
+  void release([Duration delay = Duration.zero]) {}
+}
 ''';
 
 const String _golden = 'test/fixtures/jobs.g.dart';
@@ -109,6 +112,26 @@ class A extends DoxJob {
     });
     expect(output, contains("JobCodec('A'"));
     expect(output, isNot(contains('value = job')));
+  });
+
+  test('a job with InteractsWithQueue and a const constructor', () async {
+    String output = await _generate(<String, String>{
+      'a|lib/jobs.dart':
+          '''
+$_header
+@Job()
+class A extends DoxJob with InteractsWithQueue {
+  const A({required this.id, this.note});
+  final int id;
+  final String? note;
+  @override
+  Future<void> handle() async {}
+}
+''',
+    });
+    expect(output, contains("JobCodec('A'"));
+    expect(output, contains("'id': value.id"));
+    expect(output, contains("note: data['note'] as String?"));
   });
 
   test('a job class must extend DoxJob', () async {

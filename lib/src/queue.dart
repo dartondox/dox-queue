@@ -6,6 +6,7 @@ import 'package:dox_mailer/dox_mailer.dart'
 
 import 'job.dart';
 import 'job_registry.dart';
+import 'job_run.dart';
 import 'queue_config.dart';
 import 'queue_driver.dart';
 import 'queue_fake.dart';
@@ -24,6 +25,9 @@ import 'send_queued_mail.dart';
 class Queue {
   static QueueConfig? _config;
   static QueueDriver? _driver;
+
+  /// the drivers of the named connections of [QueueConfig.connections]
+  static final Map<String, QueueDriver> _drivers = <String, QueueDriver>{};
   static QueueFake? _fake;
   static MailQueue? _mailQueueBeforeFake;
 
@@ -94,6 +98,7 @@ class Queue {
   static void configure(QueueConfig config) {
     _config = config;
     _driver = null;
+    _drivers.clear();
     Mail.useQueue(const QueueMailQueue());
   }
 
@@ -114,16 +119,30 @@ class Queue {
     return _driver ??= config.createDriver();
   }
 
+  /// The job store of the queue connection [connection] (a name of
+  /// [QueueConfig.connections]), made on first use. Null: [driver].
+  /// Throws an [ArgumentError] for an unknown name, and for a `sync`
+  /// connection (it has no store).
+  static QueueDriver driverOf(String? connection) {
+    if (connection == null) return driver;
+    QueueConfig settings = config.connectionOf(connection);
+    return _drivers[connection] ??= settings.createDriver(name: connection);
+  }
+
   /// Put [job] on the queue and return its id. [queue] wins over
   /// `job.queue`. With a [delay], workers take it after the delay. With
   /// [delayUntil], workers take it at that time (a past time: at once).
   /// Give [delay] or [delayUntil], not both. With the `sync` driver the
   /// job runs at once (no delay).
+  ///
+  /// Opt-in [connection]: a name of [QueueConfig.connections], like
+  /// Laravel `onConnection()`. Null: the main connection.
   static Future<String> dispatch(
     DoxJob job, {
     Duration? delay,
     String? queue,
     DateTime? delayUntil,
+    String? connection,
   }) async {
     if (delayUntil != null) {
       if (delay != null) {
@@ -134,27 +153,66 @@ class Queue {
     }
     QueueFake? fake = _fake;
     if (fake != null) {
-      fake.pushed.add(PushedJob(job, queue: queue ?? job.queue, delay: delay));
+      fake.pushed.add(
+        PushedJob(
+          job,
+          queue: queue ?? job.queue,
+          delay: delay,
+          connection: connection,
+        ),
+      );
       return JobPayload.newId();
     }
-    QueueConfig settings = config;
+    JobRegistry jobs = config.jobs;
+    QueueConfig settings = config.connectionOf(connection);
     String id = JobPayload.newId();
     if (settings.driver == 'sync') {
-      await _runNow(job);
+      if (!settings.serializeSync) {
+        await _runNow(job);
+        return id;
+      }
+      // save and read back, like a worker gets the job
+      JobPayload saved = JobPayload.decode(
+        _payload(job, id, queue, jobs).encode(),
+      );
+      await _runNow(_decode(jobs, saved));
       return id;
     }
-    JobCodec codec = settings.jobs.of(job);
+    JobPayload payload = _payload(job, id, queue, jobs);
+    await driverOf(connection).push(payload, delay: delay ?? Duration.zero);
+    return id;
+  }
+
+  /// [job] as it is saved on the queue
+  static JobPayload _payload(
+    DoxJob job,
+    String id,
+    String? queue,
+    JobRegistry jobs,
+  ) {
+    JobCodec codec = jobs.of(job);
     String data = jsonEncode(codec.encode(job), toEncodable: _toJson);
     if (job is ShouldBeEncrypted) data = encryptData(data, codec.name);
-    JobPayload payload = JobPayload(
+    return JobPayload(
       id: id,
       job: codec.name,
       queue: queue ?? job.queue,
       data: data,
       retryUntil: job.retryUntil?.millisecondsSinceEpoch,
     );
-    await driver.push(payload, delay: delay ?? Duration.zero);
-    return id;
+  }
+
+  /// the job of a saved [payload]. Throws when its name is not in [jobs]
+  /// or its data can not be read.
+  static DoxJob _decode(JobRegistry jobs, JobPayload payload) {
+    JobCodec? codec = jobs.byName(payload.job);
+    if (codec == null) {
+      throw StateError(
+        'No job class named ${payload.job} in the job registry.',
+      );
+    }
+    String data = readData(payload.data, payload.job);
+    return codec.decode(jsonDecode(data) as Map<String, Object?>);
   }
 
   /// Run [job] now, in this process, with no queue. When it throws,
@@ -175,21 +233,35 @@ class Queue {
     AfterResponse.run(() => _runNow(job));
   }
 
-  /// [dispatchSync] without the fake: the job runs, nothing is kept
+  /// [dispatchSync] without the fake: the job runs, nothing is kept.
+  /// A `fail()` inside `handle()` calls `failed()`. `release()` and
+  /// `delete()` do nothing here: there is no queue.
   static Future<void> _runNow(DoxJob job) async {
+    JobRun run = JobRun(1);
     try {
-      await job.handle();
+      await run.handle(job);
     } catch (error, stack) {
-      await job.failed(error, stack);
+      // a fail() call wins over an error thrown after it, like in a
+      // worker. The caller still gets the thrown error.
+      if (run.action == JobAction.fail) {
+        await job.failed(run.error!, run.stack!);
+      } else {
+        await job.failed(error, stack);
+      }
       rethrow;
     }
+    if (run.action == JobAction.fail) await job.failed(run.error!, run.stack!);
   }
 
-  /// Close the job store of this isolate. The next use opens it again.
+  /// Close the job stores of this isolate (also those of
+  /// [QueueConfig.connections]). The next use opens them again.
   static Future<void> close() async {
-    QueueDriver? driver = _driver;
+    List<QueueDriver?> drivers = <QueueDriver?>[_driver, ..._drivers.values];
     _driver = null;
-    await driver?.close();
+    _drivers.clear();
+    for (QueueDriver? driver in drivers) {
+      await driver?.close();
+    }
   }
 
   /// the key purpose of job data, so a value encrypted for something
