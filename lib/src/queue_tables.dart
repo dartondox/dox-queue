@@ -17,10 +17,23 @@ import 'drivers/database_queue_driver.dart';
 ///   }
 /// }
 /// ```
+///
+/// Opt-in: `QueueTables.up(schema, failedAtTimestamp: true)` makes
+/// `failed_jobs.failed_at` a timestamp column (UTC), not unix time in
+/// milliseconds. Then set `QueueConfig(failedAtTimestamp: true)` too.
+/// The queue checks once that the setting matches the column, and throws
+/// a [StateError] when it does not.
 class QueueTables {
-  static Future<void> up(Schema schema) async {
+  static Future<void> up(
+    Schema schema, {
+    bool failedAtTimestamp = false,
+  }) async {
     await schema.create(DatabaseQueueDriver.jobsTable, _jobs);
-    await schema.create(DatabaseQueueDriver.failedTable, _failedJobs);
+    // NEXT MAJOR: make this the default, then remove the flag.
+    await schema.create(
+      DatabaseQueueDriver.failedTable,
+      failedAtTimestamp ? _failedJobsWithTimestamp : _failedJobs,
+    );
   }
 
   static Future<void> down(Schema schema) async {
@@ -44,12 +57,23 @@ class QueueTables {
   /// without it works too: add it with
   /// `table.string('connection').nullable()` in a new migration.
   static void _failedJobs(Table table) {
+    _failedJobColumns(table);
+    table.bigInteger('failed_at');
+  }
+
+  /// `failed_at` is a timestamp in UTC: TIMESTAMP on SQLite, Postgres
+  /// (without time zone) and MySQL
+  static void _failedJobsWithTimestamp(Table table) {
+    _failedJobColumns(table);
+    table.timestamp('failed_at');
+  }
+
+  static void _failedJobColumns(Table table) {
     table.id();
     table.string('uuid').unique();
     table.string('connection').nullable();
     table.string('queue');
     table.longText('payload');
     table.longText('exception');
-    table.bigInteger('failed_at');
   }
 }

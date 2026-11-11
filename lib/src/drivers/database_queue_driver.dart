@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:dox_orm/dox_orm.dart';
 
 import '../queue.dart';
+import '../queue_log.dart';
 import '../queue_driver.dart';
 
 /// Keeps jobs in the `jobs` table and failed jobs in the `failed_jobs`
@@ -16,12 +17,15 @@ import '../queue_driver.dart';
 ///   at a time, so two workers never get the same job.
 ///
 /// The worker sets `reserved_at`. When it crashes, the job is free again
-/// after [retryAfter]. Times are unix time in milliseconds.
+/// after [retryAfter]. Times are unix time in milliseconds, but
+/// `failed_jobs.failed_at` is a UTC timestamp when [failedAtTimestamp] is
+/// true.
 class DatabaseQueueDriver extends QueueDriver {
   DatabaseQueueDriver({
     this.connection,
     this.retryAfter = const Duration(seconds: 90),
     this.queueConnection,
+    this.failedAtTimestamp = false,
   });
 
   /// the dox_orm connection name. Null: the default connection.
@@ -38,6 +42,16 @@ class DatabaseQueueDriver extends QueueDriver {
   /// the column existed works without it. After you add the column,
   /// restart the workers.
   bool? _hasConnectionColumn;
+
+  /// Opt-in: `failed_jobs.failed_at` is a timestamp column (UTC), not
+  /// unix time in milliseconds. See `QueueConfig.failedAtTimestamp`.
+  final bool failedAtTimestamp;
+
+  /// true after the `failed_at` column type matched [failedAtTimestamp]
+  bool _failedAtMatches = false;
+
+  /// the error of a `failed_at` column that does not match
+  String? _failedAtMismatch;
 
   static const String jobsTable = 'jobs';
   static const String failedTable = 'failed_jobs';
@@ -141,6 +155,8 @@ class DatabaseQueueDriver extends QueueDriver {
     DBDriver db = _db;
     JobPayload payload = job.payload.withAttempts(job.attempts);
     String? name = queueConnection;
+    await _checkFailedAt(db);
+    String at = _unixTime(db) ? 'FROM_UNIXTIME(@now DIV 1000)' : '@now';
     // outside the transaction: on Postgres a failed query there would
     // break it. The main connection never reads it: NULL is the default.
     bool withName =
@@ -152,16 +168,16 @@ class DatabaseQueueDriver extends QueueDriver {
         withName
             ? 'INSERT INTO $failedTable (uuid, connection, queue, payload, '
                   'exception, failed_at) VALUES (@uuid, @connection, @queue, '
-                  '@payload, @error, @now)'
+                  '@payload, @error, $at)'
             : 'INSERT INTO $failedTable (uuid, queue, payload, exception, '
-                  'failed_at) VALUES (@uuid, @queue, @payload, @error, @now)',
+                  'failed_at) VALUES (@uuid, @queue, @payload, @error, $at)',
         substitutionValues: <String, dynamic>{
           'uuid': payload.id,
           'connection': ?(withName ? name : null),
           'queue': payload.queue,
           'payload': payload.encode(),
           'error': error,
-          'now': QueueDriver.now(),
+          'now': _failedAtValue(db, QueueDriver.now()),
         },
       );
       await db.execute(
@@ -173,9 +189,11 @@ class DatabaseQueueDriver extends QueueDriver {
 
   @override
   Future<List<FailedJob>> failed() async {
-    List<Map<String, dynamic>> rows = await _db.query(
-      'SELECT uuid, queue, payload, exception, failed_at FROM $failedTable '
-      'ORDER BY id',
+    DBDriver db = _db;
+    await _checkFailedAt(db);
+    List<Map<String, dynamic>> rows = await db.query(
+      'SELECT uuid, queue, payload, exception, ${_failedAtColumn(db)} '
+      'FROM $failedTable ORDER BY id',
     );
     return <FailedJob>[for (Map<String, dynamic> row in rows) _failed(row)];
   }
@@ -183,6 +201,7 @@ class DatabaseQueueDriver extends QueueDriver {
   @override
   Future<bool> retry(String id) async {
     DBDriver db = _db;
+    await _checkFailedAt(db);
     return db.transaction(() async {
       FailedJob? job = await _find(db, id);
       if (job == null) return false;
@@ -195,6 +214,7 @@ class DatabaseQueueDriver extends QueueDriver {
   @override
   Future<bool> forget(String id) async {
     DBDriver db = _db;
+    await _checkFailedAt(db);
     if (await _find(db, id) == null) return false;
     await _forget(db, id);
     return true;
@@ -211,12 +231,96 @@ class DatabaseQueueDriver extends QueueDriver {
   }
 
   @override
-  Future<int> pruneFailed(DateTime before) {
+  Future<int> pruneFailed(DateTime before) async {
+    DBDriver db = _db;
+    await _checkFailedAt(db);
     return _deleteWhere(
       failedTable,
-      'failed_at < @value',
-      before.millisecondsSinceEpoch,
+      _unixTime(db)
+          ? 'UNIX_TIMESTAMP(failed_at) * 1000 < @value'
+          : 'failed_at < @value',
+      _failedAtValue(db, before.millisecondsSinceEpoch),
     );
+  }
+
+  /// True when `failed_at` is a MySQL TIMESTAMP. It is then written with
+  /// `FROM_UNIXTIME()` and read with `UNIX_TIMESTAMP()`, so the stored
+  /// instant does not depend on the session time zone.
+  bool _unixTime(DBDriver db) {
+    return failedAtTimestamp && db.getName() == Driver.mysql;
+  }
+
+  /// the `failed_at` column of a SELECT
+  String _failedAtColumn(DBDriver db) {
+    return _unixTime(db)
+        ? 'UNIX_TIMESTAMP(failed_at) * 1000 AS failed_at'
+        : 'failed_at';
+  }
+
+  /// [millis] as the `failed_at` value: the number (also for a MySQL
+  /// timestamp, see [_unixTime]), or a UTC time. Both keep milliseconds
+  /// only, so SQLite text compares in time order.
+  Object _failedAtValue(DBDriver db, int millis) {
+    if (!failedAtTimestamp || _unixTime(db)) return millis;
+    return DateTime.fromMillisecondsSinceEpoch(millis, isUtc: true);
+  }
+
+  /// Throws a [StateError] when the type of `failed_at` does not match
+  /// [failedAtTimestamp], so a wrong value is never written. A match or
+  /// a mismatch is kept, so the type is read once per driver, and a
+  /// mismatch throws on every call.
+  ///
+  /// When the type can not be read (eg. the connection dropped), nothing
+  /// is kept and the next call reads it again. With the setting off the
+  /// call goes on after a warning, as without the check. With the
+  /// setting on the error goes to the caller. Without the table it
+  /// checks again on the next call.
+  Future<void> _checkFailedAt(DBDriver db) async {
+    if (_failedAtMatches) return;
+    String? mismatch = _failedAtMismatch;
+    if (mismatch != null) throw StateError(mismatch);
+    List<Map<String, dynamic>> rows;
+    try {
+      rows = await db.query(_failedAtTypeSql(db.getName()));
+    } catch (error) {
+      if (failedAtTimestamp) rethrow;
+      QueueLog.warn(
+        'Queue: can not read the type of $failedTable.failed_at, it is '
+        'read again next time: $error',
+      );
+      return;
+    }
+    if (rows.isEmpty) return;
+    String type = '${rows.first.values.first}'.toLowerCase();
+    bool isTime = type.contains('time') || type.contains('date');
+    if (isTime == failedAtTimestamp) {
+      _failedAtMatches = true;
+      return;
+    }
+    mismatch = _failedAtMismatch = isTime
+        ? '$failedTable.failed_at is a $type column, but '
+              'QueueConfig.failedAtTimestamp is false. Set it to true.'
+        : '$failedTable.failed_at is a $type column, but '
+              'QueueConfig.failedAtTimestamp is true. Change the column '
+              'to a timestamp first (see the queue docs), or set it to '
+              'false.';
+    throw StateError(mismatch);
+  }
+
+  static String _failedAtTypeSql(Driver driver) {
+    return switch (driver) {
+      Driver.sqlite =>
+        "SELECT type FROM pragma_table_info('$failedTable') "
+            "WHERE name = 'failed_at'",
+      Driver.postgres =>
+        'SELECT data_type FROM information_schema.columns '
+            'WHERE table_schema = current_schema() AND table_name = '
+            "'$failedTable' AND column_name = 'failed_at'",
+      Driver.mysql =>
+        'SELECT data_type FROM information_schema.columns '
+            'WHERE table_schema = DATABASE() AND table_name = '
+            "'$failedTable' AND column_name = 'failed_at'",
+    };
   }
 
   /// delete the rows of [table] that match [where], and count them
@@ -238,8 +342,8 @@ class DatabaseQueueDriver extends QueueDriver {
 
   Future<FailedJob?> _find(DBDriver db, String id) async {
     List<Map<String, dynamic>> rows = await db.query(
-      'SELECT uuid, queue, payload, exception, failed_at FROM $failedTable '
-      'WHERE uuid = @uuid',
+      'SELECT uuid, queue, payload, exception, ${_failedAtColumn(db)} '
+      'FROM $failedTable WHERE uuid = @uuid',
       substitutionValues: <String, dynamic>{'uuid': id},
     );
     return rows.isEmpty ? null : _failed(rows.first);
@@ -266,8 +370,15 @@ class DatabaseQueueDriver extends QueueDriver {
       queue: _text(row['queue']),
       payload: _text(row['payload']),
       error: _text(row['exception']),
-      failedAt: DateTime.fromMillisecondsSinceEpoch(_int(row['failed_at'])),
+      failedAt: _time(row['failed_at']),
     );
+  }
+
+  /// `failed_at`: a UTC time from a timestamp column, or unix time in
+  /// milliseconds. Both give the same local [DateTime].
+  static DateTime _time(Object? value) {
+    if (value is DateTime) return value.toLocal();
+    return DateTime.fromMillisecondsSinceEpoch(_int(value));
   }
 
   /// drivers give a number as int, or as text (eg. mysql bigint)

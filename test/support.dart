@@ -18,6 +18,12 @@ DatabaseConfig testDatabaseConfig = DatabaseConfig(
       database: ':memory:',
       debug: false,
     ),
+    // a second SQLite database, for two queue connections
+    'sqlite_other': ConnectionConfig(
+      driver: Driver.sqlite,
+      database: ':memory:',
+      debug: false,
+    ),
     'postgres': ConnectionConfig(
       driver: Driver.postgres,
       host: '127.0.0.1',
