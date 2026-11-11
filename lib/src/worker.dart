@@ -215,9 +215,9 @@ class Worker {
     } catch (error, stack) {
       bool timedOut = error is TimeoutException;
       // handle() ended with an error after release, fail or delete: the
-      // call wins. On a timeout the call is dropped: the timeout rules
-      // count, as for any job.
-      if (!timedOut && jobRun.action != null) {
+      // call wins, also over its own TimeoutException. When the worker
+      // timeout fired, the call is dropped: the timeout rules count.
+      if (jobRun.ended && jobRun.action != null) {
         QueueLog.warn(
           'Queue: $label threw after ${jobRun.action!.name}(): $error',
         );

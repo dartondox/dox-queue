@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:dox_queue/dox_queue.dart';
@@ -49,6 +50,11 @@ class ControlJob extends DoxJob with InteractsWithQueue {
         await Future<void>.delayed(const Duration(milliseconds: 200));
       case 'release-default-tries':
         release();
+      case 'release-then-own-timeout':
+        if (attempt == 1) {
+          release();
+          throw TimeoutException('the api did not answer');
+        }
       case 'release-then-throw':
         if (attempt == 1) {
           release();
@@ -257,6 +263,17 @@ void main() {
         // let the hanging runs end
         await Future<void>.delayed(const Duration(milliseconds: 250));
       });
+
+      test('release() wins over a TimeoutException of the job', () async {
+        await ControlJob('release-then-own-timeout').dispatch();
+        await work();
+        expect(JobLog.handled, <String>[
+          'release-then-own-timeout 1',
+          'release-then-own-timeout 2',
+        ]);
+        expect(JobLog.failed, isEmpty);
+        expect(await Queue.driver.failed(), isEmpty);
+      });
     }, skip: store.skip);
   }
 
@@ -277,6 +294,20 @@ void main() {
         'fail: Bad state: stop',
         'fail: Bad state: stop',
       ]);
+    });
+
+    test('fail() then a throw: failed() gets the fail() error', () async {
+      await expectLater(
+        ControlJob('fail-then-throw').dispatchSync(),
+        throwsA(
+          isA<StateError>().having(
+            (StateError e) => e.message,
+            'message',
+            'after fail',
+          ),
+        ),
+      );
+      expect(JobLog.failed, <String>['fail-then-throw: Bad state: stop']);
     });
 
     test('a job without the mixin keeps its own member names', () async {

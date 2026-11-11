@@ -22,6 +22,10 @@ class JobRun {
   Object? error;
   StackTrace? stack;
 
+  /// true when `handle()` returned or threw. Still false when the
+  /// worker timeout fired first.
+  bool ended = false;
+
   /// The run of each running job. An [Expando], so a job class needs no
   /// field and its constructor can stay `const`. Per isolate, like the
   /// job object itself.
@@ -38,6 +42,7 @@ class JobRun {
     try {
       await job.handle();
     } finally {
+      ended = true;
       if (identical(_runs[job], this)) _runs[job] = null;
     }
   }

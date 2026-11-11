@@ -241,7 +241,13 @@ class Queue {
     try {
       await run.handle(job);
     } catch (error, stack) {
-      await job.failed(error, stack);
+      // a fail() call wins over an error thrown after it, like in a
+      // worker. The caller still gets the thrown error.
+      if (run.action == JobAction.fail) {
+        await job.failed(run.error!, run.stack!);
+      } else {
+        await job.failed(error, stack);
+      }
       rethrow;
     }
     if (run.action == JobAction.fail) await job.failed(run.error!, run.stack!);
