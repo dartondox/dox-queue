@@ -11,6 +11,7 @@ import 'job_registry.dart';
 import 'job_run.dart';
 import 'queue_config.dart';
 import 'queue_driver.dart';
+import 'queue_event.dart';
 import 'queue_fake.dart';
 import 'queue_log.dart';
 import 'send_queued_mail.dart';
@@ -247,8 +248,72 @@ class Queue {
       await lock?.release();
       rethrow;
     }
+    await QueueEvent(
+      QueueEventType.queued,
+      job: job,
+      name: payload.job,
+      id: id,
+      queue: payload.queue,
+      delay: delay ?? Duration.zero,
+    ).fire();
     return true;
   }
+
+  /// Listen to [QueueEventType.queued]: `dispatch()` pushed a job. Not
+  /// with the `sync` driver or `Queue.fake()`.
+  ///
+  /// Listeners count for this isolate. Add them where the app starts
+  /// (eg. in a provider), so each isolate and each worker has them. A
+  /// listener can return a Future: the queue waits for it. One that
+  /// throws is logged and never stops the worker.
+  static void queued(QueueListener listener) {
+    QueueEvent.listen(QueueEventType.queued, listener);
+  }
+
+  /// Listen to [QueueEventType.processing]: a worker starts a job, like
+  /// Laravel `Queue::before()`.
+  static void before(QueueListener listener) {
+    QueueEvent.listen(QueueEventType.processing, listener);
+  }
+
+  /// Listen to [QueueEventType.processed]: a worker finished a job and
+  /// deleted it, like Laravel `Queue::after()`.
+  static void after(QueueListener listener) {
+    QueueEvent.listen(QueueEventType.processed, listener);
+  }
+
+  /// Listen to [QueueEventType.released]: a worker put a job back on the
+  /// queue, after `release()` or an error with a try left.
+  static void released(QueueListener listener) {
+    QueueEvent.listen(QueueEventType.released, listener);
+  }
+
+  /// Listen to [QueueEventType.exceptionOccurred]: `handle()` threw and
+  /// the job will be tried again, like Laravel `Queue::exceptionOccurred()`.
+  static void exceptionOccurred(QueueListener listener) {
+    QueueEvent.listen(QueueEventType.exceptionOccurred, listener);
+  }
+
+  /// Listen to [QueueEventType.failed]: a job failed for good, like
+  /// Laravel `Queue::failing()`.
+  static void failing(QueueListener listener) {
+    QueueEvent.listen(QueueEventType.failed, listener);
+  }
+
+  /// Listen to [QueueEventType.looping]: a worker loop is about to take
+  /// the next job, like Laravel `Queue::looping()`.
+  static void looping(QueueListener listener) {
+    QueueEvent.listen(QueueEventType.looping, listener);
+  }
+
+  /// Listen to [QueueEventType.stopping]: a worker stops, like Laravel
+  /// `Queue::stopping()`.
+  static void stopping(QueueListener listener) {
+    QueueEvent.listen(QueueEventType.stopping, listener);
+  }
+
+  /// Remove every queue listener (eg. between tests).
+  static void forgetListeners() => QueueEvent.forgetListeners();
 
   /// The cache lock name of a [ShouldBeUnique] job. [name] is the job
   /// name of the registry.
