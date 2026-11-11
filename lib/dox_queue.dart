@@ -17,6 +17,7 @@ export 'src/queue_fake.dart';
 export 'src/queue_provider.dart';
 export 'src/queue_tables.dart';
 export 'src/queue_worker.dart';
+export 'src/schedule_jobs.dart';
 export 'src/send_queued_mail.dart'
     show RedactedMailError, SendEncryptedQueuedMail, SendQueuedMail;
 export 'src/worker.dart';
