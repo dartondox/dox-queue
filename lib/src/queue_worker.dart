@@ -20,6 +20,9 @@ import 'worker.dart';
 ///   `--sleep=SECONDS`, `--stop-when-empty`, `--timeout-grace=SECONDS`,
 ///   `--backoff=SECONDS[,SECONDS...]`, `--max-jobs=N`,
 ///   `--max-time=SECONDS`, `--memory=MB`.
+///
+/// Every command takes the opt-in flag `--connection=NAME`: use that
+/// queue connection of `QueueConfig.connections`. Default: the main one.
 /// - `failed`: list the failed jobs.
 /// - `retry <id|all>`: put failed jobs back on their queue.
 /// - `forget <id>`: delete one failed job.
@@ -62,6 +65,10 @@ Commands:
   clear [queue]     delete the jobs of a queue (default: default)
   restart           stop the running workers after their current jobs
   prune-failed      delete failed jobs older than --hours=N (default: 24)
+
+Flags of all commands:
+  --connection=NAME   the queue connection of QueueConfig.connections
+                      (default: the main connection)
 
 Flags of work:
   --queue=a,b         the queues to work, first one first (default: default)
@@ -111,23 +118,24 @@ Flags of work:
   Future<int> _run(QueueCommand command) async {
     switch (command.name) {
       case 'work':
-        return _work(command.options);
+        return _work(command.options, command.connection);
       case 'failed':
-        _printFailed(await Queue.driver.failed());
+        _printFailed(await Queue.driverOf(command.connection).failed());
         return 0;
       case 'retry':
-        return _retry(command.argument);
+        return _retry(Queue.driverOf(command.connection), command.argument);
       case 'forget':
-        bool found = await Queue.driver.forget(command.argument);
+        bool found = await Queue.driverOf(command.connection)
+            .forget(command.argument);
         stdout.writeln(found ? 'Deleted failed job.' : 'No failed job found.');
         return found ? 0 : 1;
       case 'flush':
-        await Queue.driver.flush();
+        await Queue.driverOf(command.connection).flush();
         stdout.writeln('Deleted all failed jobs.');
         return 0;
       case 'clear':
         String queue = command.argument.isEmpty ? 'default' : command.argument;
-        int count = await Queue.driver.clear(queue);
+        int count = await Queue.driverOf(command.connection).clear(queue);
         stdout.writeln('Deleted $count jobs of the $queue queue.');
         return 0;
       case 'restart':
@@ -138,22 +146,24 @@ Flags of work:
         DateTime before = DateTime.now().subtract(
           Duration(hours: command.hours),
         );
-        int count = await Queue.driver.pruneFailed(before);
+        int count = await Queue.driverOf(command.connection)
+            .pruneFailed(before);
         stdout.writeln('Deleted $count failed jobs.');
         return 0;
     }
     return 64;
   }
 
-  Future<int> _work(WorkerOptions options) async {
-    if (Queue.config.driver == 'sync') {
+  Future<int> _work(WorkerOptions options, String? connection) async {
+    String driverName = Queue.config.connectionOf(connection).driver;
+    if (driverName == 'sync') {
       stdout.writeln(
         'The sync driver runs jobs on dispatch. No worker needed.',
       );
       return 0;
     }
     Worker worker = Worker(
-      driver: Queue.driver,
+      driver: Queue.driverOf(connection),
       jobs: Queue.config.jobs,
       options: options,
     );
@@ -205,7 +215,8 @@ Flags of work:
     }
     Logger.info(
       'Queue: worker started on ${options.queues.join(', ')} '
-      '(${Queue.config.driver}, concurrency ${options.concurrency})',
+      '(${connection ?? 'main connection'}, $driverName, '
+      'concurrency ${options.concurrency})',
     );
     await worker.run();
     restart?.cancel();
@@ -216,8 +227,7 @@ Flags of work:
     return 0;
   }
 
-  Future<int> _retry(String id) async {
-    QueueDriver driver = Queue.driver;
+  Future<int> _retry(QueueDriver driver, String id) async {
     if (id != 'all') {
       bool found = await driver.retry(id);
       stdout.writeln(found ? 'Retried failed job.' : 'No failed job found.');
@@ -276,7 +286,13 @@ Flags of work:
 
 /// A parsed `bin/queue.dart` command line.
 class QueueCommand {
-  QueueCommand(this.name, this.argument, this.options, {this.hours = 24});
+  QueueCommand(
+    this.name,
+    this.argument,
+    this.options, {
+    this.hours = 24,
+    this.connection,
+  });
 
   /// `work`, `failed`, `retry`, `forget`, `flush`, `clear`, `restart` or
   /// `prune-failed`
@@ -288,6 +304,10 @@ class QueueCommand {
 
   /// `--hours` of `prune-failed`
   final int hours;
+
+  /// `--connection`: a name of `QueueConfig.connections`. Null: the
+  /// main connection.
+  final String? connection;
 
   static const List<String> _commands = <String>[
     'work',
@@ -346,7 +366,17 @@ class QueueCommand {
         memory: _int(flags, 'memory'),
       ),
       hours: _int(flags, 'hours') ?? 24,
+      connection: _connection(flags['connection']),
     );
+  }
+
+  /// `--connection=NAME`. Null when not given.
+  static String? _connection(String? value) {
+    if (value == null) return null;
+    if (value.trim().isEmpty) {
+      throw FormatException('--connection needs a connection name');
+    }
+    return value.trim();
   }
 
   /// `--backoff=1,5,10`: seconds, one entry per retry
@@ -379,6 +409,7 @@ class QueueCommand {
     'max-time',
     'memory',
     'hours',
+    'connection',
   ];
 
   static String _trim(String value) => value.trim();

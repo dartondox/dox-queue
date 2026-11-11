@@ -2,7 +2,7 @@ import 'job.dart';
 
 /// A job that `Queue.dispatch()` got while `Queue.fake()` was on.
 class PushedJob {
-  const PushedJob(this.job, {required this.queue, this.delay});
+  const PushedJob(this.job, {required this.queue, this.delay, this.connection});
 
   /// the job, as it was dispatched
   final DoxJob job;
@@ -12,6 +12,9 @@ class PushedJob {
 
   /// the `dispatch(delay:)`, or null when there was none
   final Duration? delay;
+
+  /// the `dispatch(connection:)`, or null for the main connection
+  final String? connection;
 }
 
 /// Keeps every dispatched job in [pushed] and runs or saves nothing.

@@ -4,6 +4,7 @@ import 'dart:io' show ProcessInfo;
 
 import 'job.dart';
 import 'job_registry.dart';
+import 'job_run.dart';
 import 'queue.dart';
 import 'queue_driver.dart';
 import 'queue_log.dart';
@@ -197,8 +198,8 @@ class Worker {
         payload.retryUntil != null
             ? '$label is past its retryUntil time.'
             : '$label was tried ${reserved.attempts - 1} times and did not '
-                  'finish. The worker may have crashed, or the job ran '
-                  'longer than retryAfter.',
+                  'finish. The job called release(), or the worker may '
+                  'have crashed, or the job ran longer than retryAfter.',
       );
       await _fail(reserved, job, label, error, StackTrace.current);
       return;
@@ -207,10 +208,19 @@ class Worker {
     Stopwatch watch = Stopwatch()..start();
     QueueLog.info('Queue: running $label');
     Future<void>? run;
+    JobRun jobRun = JobRun(reserved.attempts);
     try {
-      run = job.handle();
+      run = jobRun.handle(job);
       await run.timeout(timeout);
     } catch (error, stack) {
+      if (jobRun.action != null) {
+        // the job asked for release, fail or delete: that wins
+        QueueLog.warn(
+          'Queue: $label threw after ${jobRun.action!.name}(): $error',
+        );
+        await _apply(jobRun, reserved, job, label);
+        return;
+      }
       Object reason = error;
       bool timedOut = error is TimeoutException;
       int exceptions = payload.exceptions;
@@ -241,8 +251,31 @@ class Worker {
       await driver.release(next, wait);
       return;
     }
+    if (jobRun.action != null) {
+      await _apply(jobRun, reserved, job, label);
+      return;
+    }
     await driver.delete(reserved);
     QueueLog.success('Queue: done $label in ${watch.elapsedMilliseconds}ms');
+  }
+
+  /// do what the job asked for with `release()`, `fail()` or `delete()`
+  Future<void> _apply(
+    JobRun jobRun,
+    ReservedJob reserved,
+    DoxJob job,
+    String label,
+  ) async {
+    switch (jobRun.action!) {
+      case JobAction.release:
+        QueueLog.info('Queue: $label released, next try in ${jobRun.delay}');
+        await driver.release(reserved, jobRun.delay);
+      case JobAction.delete:
+        await driver.delete(reserved);
+        QueueLog.info('Queue: $label deleted by the job');
+      case JobAction.fail:
+        await _fail(reserved, job, label, jobRun.error!, jobRun.stack!);
+    }
   }
 
   /// With [WorkerOptions.timeoutGrace], wait until the timed-out [run]
