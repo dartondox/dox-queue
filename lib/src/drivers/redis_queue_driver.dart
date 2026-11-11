@@ -52,9 +52,13 @@ redis.call('ZADD', KEYS[3], ARGV[2], reserved)
 return reserved''';
 
   /// Moves a reserved job to the delayed set, as the new text ARGV[3]
-  /// (it can have a new exception count).
+  /// (it can have a new exception count). Only when it is still reserved:
+  /// after `clear`, or after its reservation ran out and another pop took
+  /// it back, the job must not come back a second time.
   static const String _releaseScript = '''
-redis.call('ZREM', KEYS[1], ARGV[1])
+if redis.call('ZREM', KEYS[1], ARGV[1]) == 0 then
+  return 0
+end
 redis.call('ZADD', KEYS[2], ARGV[2], ARGV[3])
 return 1''';
 

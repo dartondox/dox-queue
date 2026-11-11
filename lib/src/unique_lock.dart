@@ -23,7 +23,14 @@ Future<void> releaseUniqueLock(String name, String id) async {
 Future<void> freeUniqueLockOf(String text) async {
   // most jobs are not unique: skip the JSON decode for them
   if (!text.contains('"unique":')) return;
-  JobPayload payload = JobPayload.decode(text);
+  JobPayload payload;
+  try {
+    payload = JobPayload.decode(text);
+  } catch (error) {
+    // one broken job must not stop the clear of the others
+    QueueLog.warn('Queue: can not read a cleared job: $error');
+    return;
+  }
   String? name = payload.unique;
   if (name != null) await releaseUniqueLock(name, payload.id);
 }

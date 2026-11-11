@@ -1,5 +1,5 @@
 import 'package:dox_core/dox_core.dart' show CacheConfig, CacheManager, Dox;
-import 'package:dox_orm/dox_orm.dart' show QueryBuilder;
+import 'package:dox_orm/dox_orm.dart' show QueryBuilder, SqlQueryBuilder;
 import 'package:dox_queue/dox_queue.dart';
 import 'package:test/test.dart';
 
@@ -172,6 +172,37 @@ void main() {
         expect(await Queue.driver.clear('default'), 3);
         expect(await UniqueJob('a').dispatch(), isNotEmpty);
         expect(await UniqueJob('b').dispatch(), isNotEmpty);
+      });
+
+      test('a job released after clear() does not come back', () async {
+        await UniqueJob('a').dispatch();
+        ReservedJob? running = await Queue.driver.pop('default');
+        await Queue.driver.clear('default');
+        await Queue.driver.release(running!, Duration.zero);
+        expect(await Queue.driver.pop('default'), isNull);
+        expect(await UniqueJob('a').dispatch(), isNotEmpty);
+      });
+
+      test('a broken job does not stop clear()', () async {
+        String broken = '{"unique": broken';
+        if (store.isRedis) {
+          await (Queue.driver as RedisQueueDriver).redis.rpush(
+            'dox_queue_test:queue:default',
+            broken,
+          );
+        } else {
+          await SqlQueryBuilder()
+              .getDBDriver(store.name)
+              .execute(
+                'INSERT INTO jobs (queue, payload, attempts, reserved_at, '
+                "available_at, created_at) VALUES ('default', @payload, 0, "
+                'NULL, 0, 0)',
+                substitutionValues: <String, dynamic>{'payload': broken},
+              );
+        }
+        await UniqueJob('a').dispatch();
+        expect(await Queue.driver.clear('default'), 2);
+        expect(await UniqueJob('a').dispatch(), isNotEmpty);
       });
 
       test('a job that can not be read frees its lock', () async {

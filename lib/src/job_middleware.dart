@@ -152,8 +152,12 @@ class ThrottlesExceptions extends JobMiddleware {
     } catch (_) {
       await _Limiter.hit(name, decay);
       // a release wins over the error: the worker logs the error and
-      // puts the job back. Outside a worker the error goes on.
-      release(job, retryAfter);
+      // puts the job back. Outside a worker the error goes on. A fail()
+      // or delete() of the job itself is kept.
+      JobAction? chosen = JobRun.of(job)?.action;
+      if (chosen != JobAction.fail && chosen != JobAction.delete) {
+        release(job, retryAfter);
+      }
       rethrow;
     }
     if (hits > 0) {

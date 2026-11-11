@@ -40,7 +40,7 @@ class Skip extends JobMiddleware {
 
 /// a job with the middleware of [mode]: `order`, `skip`, `release`,
 /// `limit`, `overlap-wait`, `overlap-drop` or `throttle`
-class MiddlewareJob extends DoxJob with HasMiddleware {
+class MiddlewareJob extends DoxJob with HasMiddleware, InteractsWithQueue {
   MiddlewareJob(this.mode);
 
   final String mode;
@@ -64,6 +64,7 @@ class MiddlewareJob extends DoxJob with HasMiddleware {
     'throttle' => const <JobMiddleware>[
       ThrottlesExceptions('api', maxAttempts: 1),
     ],
+    'throttle-fail' => const <JobMiddleware>[ThrottlesExceptions('api-fail')],
     'throttle-once' => const <JobMiddleware>[
       ThrottlesExceptions('api-once', maxAttempts: 2),
     ],
@@ -77,6 +78,10 @@ class MiddlewareJob extends DoxJob with HasMiddleware {
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
     if (mode == 'throttle') throw StateError('the api is down');
+    if (mode == 'throttle-fail') {
+      this.fail(StateError('stop'));
+      throw StateError('after fail');
+    }
     if (mode == 'throttle-once' && JobLog.handled.length == 1) {
       throw StateError('the api is down once');
     }
@@ -194,6 +199,15 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 1100));
         expect(await Queue.driver.pop('default'), isNull);
         expect(await Queue.driver.failed(), isEmpty);
+      });
+
+      test('ThrottlesExceptions keeps a fail() of the job', () async {
+        await MiddlewareJob('throttle-fail').dispatch();
+        await work();
+        List<FailedJob> failed = await Queue.driver.failed();
+        expect(failed, hasLength(1));
+        expect(failed.first.error, startsWith('Bad state: stop'));
+        expect(await Queue.driver.pop('default'), isNull);
       });
 
       test('ThrottlesExceptions: after the limit the job waits', () async {

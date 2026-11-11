@@ -369,7 +369,7 @@ Commands:
 | `retry all` | put all failed jobs back |
 | `forget <id>` | delete one failed job |
 | `flush` | delete all failed jobs |
-| `clear [queue]` | delete the waiting, delayed and reserved (running) jobs of a queue. Failed jobs stay. Default: `default` |
+| `clear [queue]` | delete the waiting, delayed and reserved (running) jobs of a queue. Failed jobs stay. It frees the locks of unique jobs; when the process dies in the middle, some locks stay (see Unique jobs). Default: `default` |
 | `restart` | stop the running workers after their current jobs |
 | `prune-failed` | delete failed jobs older than `--hours=N` (default 24) |
 
@@ -591,6 +591,7 @@ class UpdateSearchIndex extends DoxJob with ShouldBeUnique {
 - `queue:retry` of a failed job does not take the lock. `dispatchSync()` does not use it.
 - With `afterCommit` inside a transaction, the lock is taken at the commit. `dispatch()` returns the id at once, also when the job is then skipped.
 - `Queue.fake()` keeps its own locks. `clear()` of the fake frees them.
+- When a worker crashes, or `clear` stops in the middle, the locks of those jobs are not freed. With no `uniqueFor` such a lock never ends: `dispatch()` keeps returning `''` until you delete the cache key (`dox_queue:unique:<job name>:<uniqueId>`). So set `uniqueFor` on unique jobs.
 
 ## Queue events
 
