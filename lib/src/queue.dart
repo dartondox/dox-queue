@@ -1,6 +1,7 @@
 import 'dart:convert';
 
-import 'package:dox_core/dox_core.dart' show AESEncryptor, AfterResponse, Dox;
+import 'package:dox_core/dox_core.dart'
+    show AESEncryptor, AfterResponse, Cache, CacheLock, Dox;
 import 'package:dox_mailer/dox_mailer.dart'
     show ArrayTransport, Mail, MailQueue;
 import 'package:dox_orm/dox_orm.dart' show DBDriver, QueryBuilder;
@@ -136,6 +137,11 @@ class Queue {
   /// Give [delay] or [delayUntil], not both. With the `sync` driver the
   /// job runs at once (no delay).
   ///
+  /// A [ShouldBeUnique] job is skipped while a job with the same unique
+  /// id is on the queue. Then nothing is pushed and the id is empty
+  /// (`''`). With [afterCommit] inside a transaction the lock is taken at
+  /// the commit, so the id is returned also for a job that is skipped then.
+  ///
   /// Opt-in [connection]: a name of [QueueConfig.connections], like
   /// Laravel `onConnection()`. Null: the main connection.
   ///
@@ -162,6 +168,10 @@ class Queue {
     }
     QueueFake? fake = _fake;
     if (fake != null) {
+      if (job is ShouldBeUnique &&
+          !fake.lockUnique(uniqueKey(_nameOf(job), job), _uniqueFor(job))) {
+        return '';
+      }
       fake.pushed.add(
         PushedJob(
           job,
@@ -180,47 +190,99 @@ class Queue {
       JobPayload? payload = settings.driver != 'sync' || settings.serializeSync
           ? _payload(job, id, queue, jobs)
           : null;
-      // ponytail: waits for the default dox_orm connection only
+      // ponytail: waits for the default dox_orm connection only. A
+      // ShouldBeUnique job takes its lock at the commit, so a rollback
+      // leaves no lock. The id is returned, also when it is then skipped.
       await QueryBuilder.afterCommit(
-        () => _send(job, payload, settings, connection, delay),
+        () => _send(job, id, payload, settings, connection, delay),
       );
       return id;
     }
-    if (settings.driver == 'sync') {
-      if (!settings.serializeSync) {
-        await _runNow(job);
-        return id;
-      }
-      await _send(
-        job,
-        _payload(job, id, queue, jobs),
-        settings,
-        connection,
-        delay,
-      );
-      return id;
-    }
-    JobPayload payload = _payload(job, id, queue, jobs);
-    await _send(job, payload, settings, connection, delay);
-    return id;
+    JobPayload? payload = settings.driver != 'sync' || settings.serializeSync
+        ? _payload(job, id, queue, jobs)
+        : null;
+    bool sent = await _send(job, id, payload, settings, connection, delay);
+    return sent ? id : '';
   }
 
   /// Push [payload], or run the job with the `sync` driver. [payload] is
   /// null only for `sync` without `serializeSync`: then [job] runs as it is.
-  static Future<void> _send(
+  /// False when a [ShouldBeUnique] job was skipped.
+  static Future<bool> _send(
     DoxJob job,
+    String id,
     JobPayload? payload,
     QueueConfig settings,
     String? connection,
     Duration? delay,
   ) async {
-    if (settings.driver == 'sync') {
-      if (payload == null) return _runNow(job);
-      // save and read back, like a worker gets the job
-      JobPayload saved = JobPayload.decode(payload.encode());
-      return _runNow(_decode(config.jobs, saved));
+    CacheLock? lock;
+    if (job is ShouldBeUnique) {
+      lock = Cache().lock(uniqueKey(_nameOf(job), job), _uniqueFor(job), id);
+      if (!await lock.get()) {
+        QueueLog.info(
+          'Queue: skipped ${job.runtimeType}, a job with the same unique '
+          'id is on the queue',
+        );
+        return false;
+      }
     }
-    await driverOf(connection).push(payload!, delay: delay ?? Duration.zero);
+    if (settings.driver == 'sync') {
+      try {
+        if (payload == null) {
+          await _runNow(job);
+        } else {
+          // save and read back, like a worker gets the job
+          JobPayload saved = JobPayload.decode(payload.encode());
+          await _runNow(_decode(config.jobs, saved));
+        }
+      } finally {
+        await lock?.release();
+      }
+      return true;
+    }
+    try {
+      await driverOf(connection).push(payload!, delay: delay ?? Duration.zero);
+    } catch (_) {
+      await lock?.release();
+      rethrow;
+    }
+    return true;
+  }
+
+  /// The cache lock name of a [ShouldBeUnique] job. [name] is the job
+  /// name of the registry.
+  static String uniqueKey(String name, ShouldBeUnique job) {
+    return 'dox_queue:unique:$name:${job.uniqueId}';
+  }
+
+  /// Free the lock of a [ShouldBeUnique] job. The worker calls it. [id]
+  /// is the job id: only the lock of this job is freed, not the lock of
+  /// a newer job after this one expired. An error is logged.
+  static Future<void> releaseUnique(
+    String name,
+    String id,
+    ShouldBeUnique job,
+  ) async {
+    try {
+      await Cache().lock(uniqueKey(name, job), null, id).release();
+    } catch (error, stack) {
+      QueueLog.danger(
+        'Queue: can not free the unique lock of $name $id: $error',
+        '$stack',
+      );
+    }
+  }
+
+  /// the registry name of [job], or its class name when it has none
+  static String _nameOf(DoxJob job) {
+    return _config?.jobs.byType(job.runtimeType)?.name ?? '${job.runtimeType}';
+  }
+
+  /// `uniqueFor`, with zero or less as no end (like Laravel 0)
+  static Duration? _uniqueFor(ShouldBeUnique job) {
+    Duration? time = job.uniqueFor;
+    return time == null || time <= Duration.zero ? null : time;
   }
 
   /// [job] as it is saved on the queue

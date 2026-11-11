@@ -33,6 +33,22 @@ class QueueFake {
   /// not stop them: they still run. They are not in [pushed].
   final List<DoxJob> dispatchedAfterResponse = <DoxJob>[];
 
+  /// the unique locks of [ShouldBeUnique] jobs: key and end time (null:
+  /// no end). The fake has no worker, so only [clear] frees them.
+  final Map<String, DateTime?> _uniqueLocks = <String, DateTime?>{};
+
+  /// Take the unique lock [key] for [time] (null: no end). False when
+  /// it is taken. `Queue.dispatch()` calls it for a [ShouldBeUnique] job.
+  bool lockUnique(String key, Duration? time) {
+    DateTime now = DateTime.now();
+    if (_uniqueLocks.containsKey(key)) {
+      DateTime? end = _uniqueLocks[key];
+      if (end == null || end.isAfter(now)) return false;
+    }
+    _uniqueLocks[key] = time == null ? null : now.add(time);
+    return true;
+  }
+
   /// the pushed jobs of type [T]
   List<PushedJob> pushedOf<T extends DoxJob>() {
     return pushed.where(_isA<T>).toList();
@@ -89,10 +105,11 @@ class QueueFake {
     }
   }
 
-  /// forget the pushed jobs, and the jobs of [dispatchedSync] and
-  /// [dispatchedAfterResponse]
+  /// forget the pushed jobs, the jobs of [dispatchedSync] and
+  /// [dispatchedAfterResponse], and the unique locks
   void clear() {
     pushed.clear();
+    _uniqueLocks.clear();
     dispatchedSync.clear();
     dispatchedAfterResponse.clear();
   }

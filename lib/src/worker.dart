@@ -189,6 +189,9 @@ class Worker {
       await driver.fail(reserved, '$error\n$stack');
       return;
     }
+    if (job is ShouldBeUniqueUntilProcessing) {
+      await Queue.releaseUnique(payload.job, payload.id, job);
+    }
     int tries = job.tries ?? options.tries;
     if (reserved.attempts > 1 &&
         _noTryLeft(job, payload, reserved.attempts - 1)) {
@@ -257,8 +260,21 @@ class Worker {
       await _apply(jobRun, reserved, job, label);
       return;
     }
-    await driver.delete(reserved);
+    await _finish(reserved, job);
     QueueLog.success('Queue: done $label in ${watch.elapsedMilliseconds}ms');
+  }
+
+  /// the job ended: delete it and free its unique lock
+  Future<void> _finish(ReservedJob reserved, DoxJob job) async {
+    await driver.delete(reserved);
+    await _releaseUnique(reserved, job);
+  }
+
+  /// free the lock of a [ShouldBeUnique] job, unless it was freed at the
+  /// start ([ShouldBeUniqueUntilProcessing])
+  Future<void> _releaseUnique(ReservedJob reserved, DoxJob job) async {
+    if (job is! ShouldBeUnique || job is ShouldBeUniqueUntilProcessing) return;
+    await Queue.releaseUnique(reserved.payload.job, reserved.payload.id, job);
   }
 
   /// do what the job asked for with `release()`, `fail()` or `delete()`
@@ -273,7 +289,7 @@ class Worker {
         QueueLog.info('Queue: $label released, next try in ${jobRun.delay}');
         await driver.release(reserved, jobRun.delay);
       case JobAction.delete:
-        await driver.delete(reserved);
+        await _finish(reserved, job);
         QueueLog.info('Queue: $label deleted by the job');
       case JobAction.fail:
         await _fail(reserved, job, label, jobRun.error!, jobRun.stack!);
@@ -343,6 +359,7 @@ class Worker {
   ) async {
     QueueLog.danger('Queue: failed $label: $error');
     await driver.fail(reserved, '$error\n$stack');
+    await _releaseUnique(reserved, job);
     try {
       await job.failed(error, stack);
     } catch (hookError, hookStack) {

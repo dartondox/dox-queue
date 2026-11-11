@@ -145,6 +145,8 @@ CacheManager? _testCache;
 /// set (shared, like between worker processes), else a memory store.
 Future<void> useTestCache() async {
   String? port = env['REDIS_PORT'];
+  // a memory store does not flush its locks: make a new one
+  if (port == null) _testCache = null;
   CacheManager cache = _testCache ??= CacheManager(
     CacheConfig(
       defaultStore: port == null ? 'memory' : 'redis',
