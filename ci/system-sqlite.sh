@@ -11,23 +11,27 @@
 set -euo pipefail
 
 # libsqlite3.so (no version in the name) comes from the -dev package.
-# Read the list first: `grep -q` stops at the first match, and under
-# pipefail the SIGPIPE of `ldconfig` would look like "not found".
-if [ "$(uname)" = Linux ]; then
-  libs="$(ldconfig -p)"
-  if ! grep -q 'libsqlite3\.so ' <<<"$libs"; then
-    sudo apt-get install -y libsqlite3-dev
-  fi
+# grep reads all lines (no -q): with -q it can stop early, ldconfig then
+# gets SIGPIPE, and pipefail makes the check fail.
+if [ "$(uname)" = Linux ] && ! ldconfig -p | grep 'libsqlite3\.so ' >/dev/null; then
+  sudo apt-get install -y libsqlite3-dev
 fi
 
+# A pubspec that has a hooks block already (like the app template, which
+# skips the Postgres and MySQL drivers) gets the sqlite3 lines inside it.
 for file in "$@"; do
-  if grep -q '^hooks:' "$file"; then
-    # a GitHub warning, so it shows on the run page
-    echo "::warning file=$file::has a hooks block already, not changed." \
-      "sqlite3 may download its library. Add 'user_defines: sqlite3:" \
-      "source: system' to it by hand."
+  if grep -q '^    sqlite3:' "$file"; then
+    echo "$file: sets sqlite3 already, not changed"
     continue
   fi
-  printf '\nhooks:\n  user_defines:\n    sqlite3:\n      source: system\n' >> "$file"
+  if grep -q '^  user_defines:' "$file"; then
+    awk '{ print } /^  user_defines:/ { print "    sqlite3:"; print "      source: system" }' \
+      "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+  elif grep -q '^hooks:' "$file"; then
+    awk '{ print } /^hooks:/ { print "  user_defines:"; print "    sqlite3:"; print "      source: system" }' \
+      "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+  else
+    printf '\nhooks:\n  user_defines:\n    sqlite3:\n      source: system\n' >> "$file"
+  fi
   echo "$file: sqlite3 uses the system library"
 done
