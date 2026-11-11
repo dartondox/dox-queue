@@ -20,8 +20,7 @@ const Map<String, List<String>> _toTimestamp = <String, List<String>>{
   ],
   'mysql': <String>[
     'ALTER TABLE failed_jobs ADD COLUMN failed_at_utc TIMESTAMP NULL',
-    "UPDATE failed_jobs SET failed_at_utc = DATE_ADD('1970-01-01 00:00:00', "
-        'INTERVAL failed_at DIV 1000 SECOND)',
+    'UPDATE failed_jobs SET failed_at_utc = FROM_UNIXTIME(failed_at DIV 1000)',
     'ALTER TABLE failed_jobs DROP COLUMN failed_at',
     'ALTER TABLE failed_jobs CHANGE failed_at_utc failed_at TIMESTAMP NOT NULL',
   ],
@@ -38,8 +37,92 @@ JobPayload _payload(String id) {
 
 String _id(FailedJob job) => job.id;
 
+/// a driver whose first [failures] column type queries throw, like a
+/// connection that dropped
+class _FlakyDriver extends DBDriver {
+  _FlakyDriver(this.inner);
+
+  final DBDriver inner;
+  int failures = 1;
+
+  @override
+  Driver getName() => inner.getName();
+
+  @override
+  bool get supportsReturning => inner.supportsReturning;
+
+  @override
+  Future<List<Map<String, dynamic>>> query(
+    String query, {
+    String? primaryKey,
+    Map<String, dynamic>? substitutionValues,
+  }) async {
+    bool typeQuery =
+        query.contains('pragma_table_info') ||
+        query.contains('information_schema');
+    if (typeQuery && failures > 0) {
+      failures--;
+      throw Exception('connection lost');
+    }
+    return inner.query(
+      query,
+      primaryKey: primaryKey,
+      substitutionValues: substitutionValues,
+    );
+  }
+
+  @override
+  Future<void> execute(
+    String query, {
+    Map<String, dynamic>? substitutionValues,
+  }) {
+    return inner.execute(query, substitutionValues: substitutionValues);
+  }
+
+  @override
+  Future<R> transaction<R>(Future<R> Function() callback) {
+    return inner.transaction(callback);
+  }
+}
+
 void main() {
   setUpAll(setUpTestApp);
+
+  test('each queue connection has its own setting', () async {
+    DBDriver mainDb = SqlQueryBuilder().getDBDriver('sqlite');
+    DBDriver otherDb = SqlQueryBuilder().getDBDriver('sqlite_other');
+    await QueueTables.down(Schema(mainDb));
+    await QueueTables.up(Schema(mainDb));
+    await QueueTables.down(Schema(otherDb));
+    await QueueTables.up(Schema(otherDb), failedAtTimestamp: true);
+    QueueConfig config = QueueConfig(
+      driver: 'database',
+      connection: 'sqlite',
+      connections: <String, QueueConfig>{
+        'other': QueueConfig(
+          driver: 'database',
+          connection: 'sqlite_other',
+          failedAtTimestamp: true,
+        ),
+      },
+    );
+    QueueDriver main = config.createDriver();
+    QueueDriver other = config
+        .connectionOf('other')
+        .createDriver(name: 'other');
+    for (QueueDriver driver in <QueueDriver>[main, other]) {
+      await driver.push(_payload('a'));
+      await driver.fail((await driver.pop('default'))!, 'boom');
+      expect((await driver.failed()).map(_id), <String>['a']);
+    }
+    Future<Object?> value(DBDriver db) async {
+      return (await db.query('SELECT failed_at FROM failed_jobs'))
+          .single['failed_at'];
+    }
+
+    expect(await value(mainDb), isA<int>());
+    expect(await value(otherDb), isA<DateTime>());
+  });
 
   for (TestStore store in testStores.where((TestStore s) => !s.isRedis)) {
     DBDriver db() => SqlQueryBuilder().getDBDriver(store.name);
@@ -85,6 +168,16 @@ void main() {
           Object? value = rows.single['failed_at'];
           expect(value, timestamp ? isA<DateTime>() : isNot(isA<DateTime>()));
           FailedJob job = (await driver.failed()).single;
+          if (timestamp && store.name == 'mysql') {
+            // the true instant, in any session time zone
+            List<Map<String, dynamic>> unix = await db().query(
+              'SELECT UNIX_TIMESTAMP(failed_at) AS t FROM failed_jobs',
+            );
+            expect(
+              int.parse('${unix.single['t']}'),
+              job.failedAt.millisecondsSinceEpoch ~/ 1000,
+            );
+          }
           expect(job.failedAt.isUtc, isFalse);
           expect(job.failedAt.isAfter(start), isTrue);
           expect(job.failedAt.isAfter(DateTime.now()), isFalse);
@@ -120,6 +213,31 @@ void main() {
           expect((await driver.failed()).map(_id), <String>['new']);
         });
 
+        test('a type query that fails is not kept', () async {
+          DBDriver old = SqlQueryBuilder().dbDriver;
+          SqlQueryBuilder().dbDriver = _FlakyDriver(db());
+          QueueDriver flaky = QueueConfig(
+            driver: 'database',
+            failedAtTimestamp: timestamp,
+          ).createDriver();
+          try {
+            await flaky.push(_payload('a'));
+            ReservedJob job = (await flaky.pop('default'))!;
+            if (timestamp) {
+              // the setting on: no blind write, the error goes up
+              await expectLater(flaky.fail(job, 'boom'), throwsException);
+              expect(await flaky.failed(), isEmpty);
+            }
+            // the setting off: it goes on as without the check. On: the
+            // next call reads the type again and works.
+            await flaky.fail(job, 'boom');
+            await failJob(flaky, 'b');
+            expect((await flaky.failed()).map(_id), <String>['a', 'b']);
+          } finally {
+            SqlQueryBuilder().dbDriver = old;
+          }
+        });
+
         test('a table of the other shape throws, and moves nothing', () async {
           await makeTables(timestamp: !timestamp);
           await driver.push(_payload('a'));
@@ -150,12 +268,13 @@ void main() {
       QueueDriver before = driverOf(timestamp: false);
       await failJob(before, 'a');
       // a time with milliseconds, to see them kept
+      // 01:30 of New York, the second time, in the hour that repeats
       int millis = DateTime.utc(
         2024,
-        5,
+        11,
+        3,
         6,
-        7,
-        8,
+        30,
         9,
         999,
       ).millisecondsSinceEpoch;
@@ -182,6 +301,13 @@ void main() {
       for (int i = 0; i < old.length; i++) {
         int was = old[i].failedAt.millisecondsSinceEpoch;
         expect(now[i].failedAt.millisecondsSinceEpoch, was - was % precision);
+      }
+      if (store.name == 'mysql') {
+        List<Map<String, dynamic>> unix = await db().query(
+          'SELECT UNIX_TIMESTAMP(failed_at) AS t FROM failed_jobs '
+          "WHERE uuid = 'b'",
+        );
+        expect(int.parse('${unix.single['t']}'), millis ~/ 1000);
       }
       await failJob(after, 'c');
       expect(

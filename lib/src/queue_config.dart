@@ -125,6 +125,7 @@ class QueueConfig {
   ///
   /// It counts per connection: each entry of [connections] has its own,
   /// as each can use its own table. The Redis driver does not use it.
+  // NEXT MAJOR: make this the default, then remove the flag.
   final bool failedAtTimestamp;
 
   /// The config of the queue connection [name]. Null: this config, the

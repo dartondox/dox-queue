@@ -29,6 +29,7 @@ class QueueTables {
     bool failedAtTimestamp = false,
   }) async {
     await schema.create(DatabaseQueueDriver.jobsTable, _jobs);
+    // NEXT MAJOR: make this the default, then remove the flag.
     await schema.create(
       DatabaseQueueDriver.failedTable,
       failedAtTimestamp ? _failedJobsWithTimestamp : _failedJobs,
