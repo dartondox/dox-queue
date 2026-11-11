@@ -643,6 +643,7 @@ An error in the catch job is logged. For slow work, dispatch a new job from it.
 - A `ShouldBeUnique` job in the chain that is skipped (the same job is on the queue) stops the chain. The catch job runs with a `StateError`. When the first job is skipped, `dispatch()` returns `''` and nothing runs.
 - A next job that can not be read (eg. its class was removed) stops the chain. The catch job runs with the error.
 - The worker pushes the next job before it deletes the job that is done (like Laravel). When the push throws, the try counts as failed: the job is tried again (and runs again), and when no try is left it fails and the catch job runs. A worker that crashes between the push and the delete runs the job again, so the next job can run twice. Make jobs in a chain safe to run twice.
+- A failed push counts against the job even though its `handle()` worked: it gets an `exceptionOccurred` event and is released, and at the last try its `failed()` hook and the `failed` event run. With the default `tries` of 1 the first failed push does that, so give chain jobs more than one try.
 - The unique lock of a `ShouldBeUnique` job is freed before the next job is pushed, so a next job with the same unique id is not skipped. A retry after a failed push runs without the lock.
 - The `sync` driver runs the jobs now, one after the other. When one throws, the catch job runs and `dispatch()` throws the error.
 - `Queue.fake()` keeps the chain in `chains`. Its jobs are not in `pushed`.
@@ -741,7 +742,9 @@ class ImportRows extends DoxJob with Batchable {
 ### Traps
 
 - A `ShouldBeUnique` job that is skipped (the same job is on the queue) is taken out of `totalJobs` and `pendingJobs`. `progress` does not run for it. When it was the last open job, `then` and `whenComplete` run.
-- When a push throws in `dispatch()` or `add()`, the jobs that were not pushed are taken out of the counts, the batch is cancelled (so it is finished and can be pruned), and the error is thrown. No callback runs for those jobs. The jobs pushed before still run.
+- When a push throws in `dispatch()` or `add()`, the jobs that were not pushed are taken out of the counts, the batch is cancelled (so it is finished and can be pruned), and the error is thrown. No callback runs for those jobs. The jobs pushed before still run, and the callbacks still fire for them (also `then` and `whenComplete`), even though `dispatch()` threw. A `Batchable` job can read `cancelled` to skip its work.
+- The counts follow the at-least-once rule of the queue. A job that runs twice (eg. it ran longer than `retryAfter`, or a worker crashed in the middle of a fail) can be counted twice. `failedJobs` never goes below 0.
+- The batch is marked finished before `then` and `whenComplete` run, so `add()` from a callback (or from another process at that time) throws a `StateError`.
 - A worker that crashes after a job is done, and before it counted it, leaves the batch with that job pending. Then `then` and `whenComplete` never run. `prune-batches --unfinished=N` deletes such batches.
 - A chain inside a batch is not supported.
 - Batches do not use `afterCommit`: the batch is saved and its jobs are pushed at once.

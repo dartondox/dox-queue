@@ -529,7 +529,10 @@ class Batch {
   /// job now and counts it as done or failed. When a push throws, the
   /// jobs that were not pushed are taken out of the counts, the batch is
   /// cancelled (so it is finished and can be pruned), and the error is
-  /// thrown again. No callback runs for them.
+  /// thrown again. No callback runs for them. The jobs pushed before
+  /// still run, and the callbacks still fire for them (also `then` and
+  /// `whenComplete`). A [Batchable] job can read `cancelled` to skip
+  /// its work.
   static Future<void> _push(
     String id,
     List<DoxJob> jobs,
@@ -595,6 +598,22 @@ class Batch {
     if (batch == null) return;
     Map<String, Object?> options = batch._options;
     bool allow = options['allowFailures'] == true;
+    // Every other step lowers pending minus failed, so it hits 0 once. A
+    // retried job that is done lowers both: it never ends the batch.
+    bool ends =
+        step != _BatchStep.retriedDone && batch.pendingJobs == batch.failedJobs;
+    // mark it finished before any callback runs, so an add() from
+    // another process (or from a callback) is refused from now on
+    if (ends) {
+      await _db.execute(
+        'UPDATE $table SET finished_at = @now WHERE id = @id AND '
+        'finished_at IS NULL',
+        substitutionValues: <String, dynamic>{
+          'id': id,
+          'now': QueueDriver.now(),
+        },
+      );
+    }
     switch (step) {
       case _BatchStep.failed:
         if (batch.failedJobs == 1 && !allow) await batch.cancel();
@@ -610,20 +629,7 @@ class Batch {
         // no job ran: no progress, but it can be the last open job
         if (batch.pendingJobs == 0) await _run(options['then'], registry, id);
     }
-    // Every other step lowers pending minus failed, so it hits 0 once. A
-    // retried job that is done lowers both: it never ends the batch.
-    if (step != _BatchStep.retriedDone &&
-        batch.pendingJobs == batch.failedJobs) {
-      await _db.execute(
-        'UPDATE $table SET finished_at = @now WHERE id = @id AND '
-        'finished_at IS NULL',
-        substitutionValues: <String, dynamic>{
-          'id': id,
-          'now': QueueDriver.now(),
-        },
-      );
-      await _run(options['finally'], registry, id);
-    }
+    if (ends) await _run(options['finally'], registry, id);
   }
 
   /// run the callback job [item] of the batch [id]
@@ -661,7 +667,9 @@ class Batch {
     String update =
         'UPDATE $table SET total_jobs = total_jobs + @total, '
         'pending_jobs = pending_jobs + @pending, '
-        'failed_jobs = failed_jobs + @failed WHERE id = @id$open';
+        // never below 0, also after a count step that threw before
+        'failed_jobs = CASE WHEN failed_jobs + @failed < 0 THEN 0 '
+        'ELSE failed_jobs + @failed END WHERE id = @id$open';
     if (db.getName() != Driver.mysql) {
       // one statement: SQLite runs one write at a time, Postgres locks
       // the row

@@ -52,7 +52,8 @@ class BatchStep extends DoxJob with Batchable, InteractsWithQueue {
   }
 }
 
-/// a callback job of a batch: logs its name, the batch id and the error
+/// a callback job of a batch: logs its name, the batch id and the error.
+/// The name `add` tries to add a job to the batch and logs the error.
 class Callback extends DoxJob with Batchable, CatchesError {
   Callback(this.name);
 
@@ -63,6 +64,13 @@ class Callback extends DoxJob with Batchable, CatchesError {
     Object? error = caughtError;
     calls.add(error == null ? name : '$name: $error');
     if (batchId == null) calls.add('$name has no batch');
+    if (name == 'add') {
+      try {
+        await (await batch())!.add(<DoxJob>[BatchStep('late')]);
+      } on StateError {
+        calls.add('add refused');
+      }
+    }
   }
 
   static Map<String, Object?> encode(DoxJob job) {
@@ -364,6 +372,15 @@ void main() {
           'then',
           'finally',
         ]);
+      });
+
+      test('add() from a then job throws', () async {
+        await Queue.batch(<DoxJob>[BatchStep('a')])
+            .then(Callback('add'))
+            .dispatch();
+        await work();
+        expect(calls, <String>['add', 'add refused']);
+        expect(JobLog.handled, <String>['a']);
       });
 
       test('add() to a finished batch throws and pushes nothing', () async {
