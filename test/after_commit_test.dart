@@ -107,6 +107,7 @@ void main() {
         'CREATE TABLE IF NOT EXISTS ac_rows (id INTEGER)',
       );
       await QueryBuilder.query('DELETE FROM ac_rows');
+      addTearDown(() => QueryBuilder.query('DROP TABLE IF EXISTS ac_rows'));
       await expectLater(
         QueryBuilder.transaction(() async {
           await QueryBuilder.query('INSERT INTO ac_rows (id) VALUES (1)');
