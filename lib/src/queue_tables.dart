@@ -1,6 +1,7 @@
 import 'package:dox_orm/dox_orm.dart';
 
 import 'drivers/database_queue_driver.dart';
+import 'queue.dart';
 
 /// The `jobs` and `failed_jobs` tables of the `database` driver.
 /// `dox queue:table` writes a migration in `db/migration` that calls it:
@@ -23,6 +24,11 @@ import 'drivers/database_queue_driver.dart';
 /// milliseconds. Then set `QueueConfig(failedAtTimestamp: true)` too.
 /// The queue checks once that the setting matches the column, and throws
 /// a [StateError] when it does not.
+///
+/// Opt-in: `QueueTables.upBatches(schema)` makes the `job_batches` table
+/// of `Queue.batch()`. It is a separate call, so an app that ran the
+/// first migration adds it in a new one. Only apps with batches need it,
+/// also with the Redis driver.
 class QueueTables {
   static Future<void> up(
     Schema schema, {
@@ -39,6 +45,29 @@ class QueueTables {
   static Future<void> down(Schema schema) async {
     await schema.dropIfExists(DatabaseQueueDriver.failedTable);
     await schema.dropIfExists(DatabaseQueueDriver.jobsTable);
+  }
+
+  /// The `job_batches` table of `Queue.batch()`, in the dox_orm
+  /// connection of `QueueConfig.connection`. Times are unix time in
+  /// milliseconds.
+  static Future<void> upBatches(Schema schema) async {
+    await schema.create(Batch.table, _batches);
+  }
+
+  static Future<void> downBatches(Schema schema) async {
+    await schema.dropIfExists(Batch.table);
+  }
+
+  static void _batches(Table table) {
+    table.string('id').primary();
+    table.string('name');
+    table.integer('total_jobs');
+    table.integer('pending_jobs');
+    table.integer('failed_jobs');
+    table.longText('options');
+    table.bigInteger('cancelled_at').nullable();
+    table.bigInteger('created_at');
+    table.bigInteger('finished_at').nullable().index();
   }
 
   /// times are unix time in milliseconds

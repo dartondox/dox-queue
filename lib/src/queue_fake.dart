@@ -38,6 +38,10 @@ class QueueFake {
   /// jobs are not in [pushed].
   final List<PendingChain> chains = <PendingChain>[];
 
+  /// every batch of `Queue.batch(...).dispatch()`, oldest first. Its
+  /// jobs are not in [pushed]. `Batch.add()` adds to its jobs.
+  final List<PendingBatch> batches = <PendingBatch>[];
+
   /// the unique locks of [ShouldBeUnique] jobs: key and end time (null:
   /// no end). The fake has no worker, so only [clear] frees them.
   final Map<String, DateTime?> _uniqueLocks = <String, DateTime?>{};
@@ -123,6 +127,35 @@ class QueueFake {
     );
   }
 
+  /// A batch was dispatched. With [test], one of them must pass it.
+  /// ```
+  /// queue.assertBatched(
+  ///   (PendingBatch batch) => batch.batchName == 'import',
+  /// );
+  /// ```
+  void assertBatched([bool Function(PendingBatch batch)? test]) {
+    if (batches.isEmpty) {
+      throw AssertionError('Expected a batch to be dispatched, but none was.');
+    }
+    if (test != null && !batches.any(test)) {
+      throw AssertionError(
+        'Expected a batch that passes the test to be dispatched, but none '
+        'of the ${batches.length} ${_plural(batches.length, 'batch')} '
+        'passed it.',
+      );
+    }
+  }
+
+  /// Exactly [count] batches were dispatched. 0: none.
+  void assertBatchCount(int count) {
+    if (batches.length != count) {
+      throw AssertionError(
+        'Expected $count ${_plural(count, 'batch')} to be dispatched, but '
+        '${batches.length} ${batches.length == 1 ? 'was' : 'were'}.',
+      );
+    }
+  }
+
   /// No job was pushed at all.
   void assertNothingPushed() {
     if (pushed.isNotEmpty) {
@@ -130,11 +163,12 @@ class QueueFake {
     }
   }
 
-  /// forget the pushed jobs, the [chains], the jobs of [dispatchedSync]
+  /// forget the pushed jobs, the [chains] and [batches], the jobs of [dispatchedSync]
   /// and [dispatchedAfterResponse], and the unique locks
   void clear() {
     pushed.clear();
     chains.clear();
+    batches.clear();
     _uniqueLocks.clear();
     dispatchedSync.clear();
     dispatchedAfterResponse.clear();
@@ -165,7 +199,8 @@ class QueueFake {
   static String _times(int count) => '$count ${_plural(count, 'time')}';
 
   static String _plural(int count, String word) {
-    return count == 1 ? word : '${word}s';
+    if (count == 1) return word;
+    return word.endsWith('h') ? '${word}es' : '${word}s';
   }
 
   static bool _sameTypes(List<Type> a, List<Type> b) {

@@ -3,7 +3,8 @@ import 'dart:io';
 import 'package:dox_core/command.dart';
 
 /// `dox queue:table`: write a migration that makes the `jobs` and
-/// `failed_jobs` tables of the database driver (`QueueTables`).
+/// `failed_jobs` tables of the database driver, and the `job_batches`
+/// table of `Queue.batch()` (`QueueTables`).
 class QueueTableCommand extends Command {
   /// [migrations] is `MigrationFile()` (`db/migration`) by default
   QueueTableCommand({MigrationFile? migrations})
@@ -16,7 +17,7 @@ class QueueTableCommand extends Command {
 
   @override
   String get description =>
-      'Create a migration for the jobs and failed_jobs tables';
+      'Create a migration for the jobs, failed_jobs and job_batches tables';
 
   @override
   Future<void> run(List<String> args) async {
@@ -37,15 +38,17 @@ class QueueTableCommand extends Command {
 import 'package:dox_migration/dox_migration.dart';
 import 'package:dox_queue/dox_queue.dart';
 
-/// The jobs and failed_jobs tables of dox_queue.
+/// The jobs, failed_jobs and job_batches tables of dox_queue.
 class CreateQueueTables extends Migration {
   @override
   Future<void> up(Schema schema) async {
     await QueueTables.up(schema);
+    await QueueTables.upBatches(schema);
   }
 
   @override
   Future<void> down(Schema schema) async {
+    await QueueTables.downBatches(schema);
     await QueueTables.down(schema);
   }
 }

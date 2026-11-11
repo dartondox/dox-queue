@@ -31,6 +31,8 @@ import 'worker.dart';
 /// - `restart`: tell the running workers to stop after their current
 ///   jobs, so the process manager starts them with the new code.
 /// - `prune-failed`: delete failed jobs older than `--hours=N` (24).
+/// - `prune-batches`: delete the batches of `Queue.batch()` that
+///   finished more than `--hours=N` (24) ago.
 ///
 /// SIGINT (Ctrl+C) and SIGTERM stop the worker gracefully: it takes no
 /// new job and waits for the running jobs. A second signal stops it at
@@ -65,6 +67,8 @@ Commands:
   clear [queue]     delete the jobs of a queue (default: default)
   restart           stop the running workers after their current jobs
   prune-failed      delete failed jobs older than --hours=N (default: 24)
+  prune-batches     delete batches that finished more than --hours=N ago
+                    (default: 24)
 
 Flags of all commands:
   --connection=NAME   the queue connection of QueueConfig.connections
@@ -149,6 +153,13 @@ Flags of work:
         int count = await Queue.driverOf(command.connection)
             .pruneFailed(before);
         stdout.writeln('Deleted $count failed jobs.');
+        return 0;
+      case 'prune-batches':
+        DateTime before = DateTime.now().subtract(
+          Duration(hours: command.hours),
+        );
+        int count = await Queue.pruneBatches(before);
+        stdout.writeln('Deleted $count batches.');
         return 0;
     }
     return 64;
@@ -294,15 +305,15 @@ class QueueCommand {
     this.connection,
   });
 
-  /// `work`, `failed`, `retry`, `forget`, `flush`, `clear`, `restart` or
-  /// `prune-failed`
+  /// `work`, `failed`, `retry`, `forget`, `flush`, `clear`, `restart`,
+  /// `prune-failed` or `prune-batches`
   final String name;
 
   /// the id of `retry` and `forget`, the queue of `clear`
   final String argument;
   final WorkerOptions options;
 
-  /// `--hours` of `prune-failed`
+  /// `--hours` of `prune-failed` and `prune-batches`
   final int hours;
 
   /// `--connection`: a name of `QueueConfig.connections`. Null: the
@@ -318,6 +329,7 @@ class QueueCommand {
     'clear',
     'restart',
     'prune-failed',
+    'prune-batches',
   ];
 
   /// Throws a [FormatException] with a clear message for a bad command

@@ -101,7 +101,7 @@ The worker starts the providers of your app (database, cache, queue). It does no
 
 ### 4. Tables (database driver only)
 
-Run `dox queue:table`. It writes a migration in `db/migration` that makes the `jobs` and `failed_jobs` tables. Then run `dox migrate`.
+Run `dox queue:table`. It writes a migration in `db/migration` that makes the `jobs` and `failed_jobs` tables, and the `job_batches` table of [job batches](#job-batches). Then run `dox migrate`.
 
 ```bash
 dox queue:table
@@ -110,7 +110,7 @@ dox migrate
 
 `queue:table` is a [package command](https://dartondox.dev/digging-deeper/package-commands/) of `dox_queue`. It does not overwrite: when a `create_queue_tables` migration is already there, it prints so and stops.
 
-The migration it writes looks like this. You can also write it by hand. `QueueTables` makes the two tables.
+The migration it writes looks like this. You can also write it by hand. `QueueTables` makes the tables.
 
 `db/migration/2026_10_25_000000_create_queue_tables.dart`:
 
@@ -119,19 +119,23 @@ The migration it writes looks like this. You can also write it by hand. `QueueTa
 import 'package:dox_migration/dox_migration.dart';
 import 'package:dox_queue/dox_queue.dart';
 
-/// The jobs and failed_jobs tables of dox_queue.
+/// The jobs, failed_jobs and job_batches tables of dox_queue.
 class CreateQueueTables extends Migration {
   @override
   Future<void> up(Schema schema) async {
     await QueueTables.up(schema);
+    await QueueTables.upBatches(schema);
   }
 
   @override
   Future<void> down(Schema schema) async {
+    await QueueTables.downBatches(schema);
     await QueueTables.down(schema);
   }
 }
 ```
+
+`job_batches` is only needed for `Queue.batch()`. An app that ran an older `queue:table` migration adds it in a new migration (see [Job batches](#job-batches)).
 
 ## Write a job
 
@@ -642,6 +646,109 @@ An error in the catch job is logged. For slow work, dispatch a new job from it.
 - The `sync` driver runs the jobs now, one after the other. When one throws, the catch job runs and `dispatch()` throws the error.
 - `Queue.fake()` keeps the chain in `chains`. Its jobs are not in `pushed`.
 
+## Job batches
+
+Run many jobs as one batch, like Laravel `Bus::batch()`, and act when they are all done:
+
+```dart
+Batch batch = await Queue.batch(<DoxJob>[
+  ImportRows(from: 0),
+  ImportRows(from: 1000),
+  ImportRows(from: 2000),
+])
+    .name('import')
+    .then(ImportDone())
+    .catchError(ImportFailed())
+    .whenComplete(CleanUpImport())
+    .dispatch(queue: 'imports');
+
+print(batch.id);
+```
+
+| Callback | Runs |
+| --- | --- |
+| `before(job)` | once, at `dispatch()`, before the jobs are pushed |
+| `progress(job)` | each time a job is done (with `allowFailures()`, also when one fails) |
+| `then(job)` | once, when every job is done |
+| `catchError(job)` | once, when the first job fails for good |
+| `whenComplete(job)` | once, when every job ran (done or failed), like Laravel `finally` |
+
+A function can not be saved in the queue, so each callback is a job of a class in `jobRegistry`. It runs once, in the process where the step happened (the worker, or the app for `before`), like `dispatchSync()`: no queue, no retry. An error in it is logged. For slow work, dispatch a new job from it. Add `Batchable` to read the batch, and `CatchesError` to read the error:
+
+```dart
+@Job()
+class ImportFailed extends DoxJob with Batchable, CatchesError {
+  @override
+  Future<void> handle() async {
+    Batch? batch = await this.batch();
+    await alertAdmin('import ${batch?.name} failed: $caughtError');
+  }
+}
+```
+
+### The table
+
+Batches are saved in the `job_batches` table of the dox_orm connection of `QueueConfig.connection` (null: the default connection). This is also so with the Redis driver. New apps get it from `dox queue:table`. An app that ran an older `queue:table` migration adds a new one:
+
+```dart
+class CreateJobBatchesTable extends Migration {
+  @override
+  Future<void> up(Schema schema) async {
+    await QueueTables.upBatches(schema);
+  }
+
+  @override
+  Future<void> down(Schema schema) async {
+    await QueueTables.downBatches(schema);
+  }
+}
+```
+
+An app that does not use batches does not need the table.
+
+### Jobs of a batch
+
+Add the opt-in `Batchable` mixin to a job to read its batch. `batchId` is the id, `batch()` reads the batch as it is now. A job can skip its work when the batch was cancelled:
+
+```dart
+@Job()
+class ImportRows extends DoxJob with Batchable {
+  ImportRows({required this.from});
+
+  final int from;
+
+  @override
+  Future<void> handle() async {
+    Batch? batch = await this.batch();
+    if (batch?.cancelled ?? false) return;
+    await importRows(from);
+  }
+}
+```
+
+`Batch` has `id`, `name`, `totalJobs`, `pendingJobs`, `failedJobs`, `processedJobs`, `progress` (0 to 100), `finished`, `cancelled`, `cancel()` and `add(jobs)`. It is the batch as it was when it was read: read it again with `Queue.findBatch(id)`.
+
+- The first job that fails for good cancels the batch. Add `allowFailures()` to keep it going.
+- `cancel()` does not stop the jobs. They still run and count. A `Batchable` job reads `cancelled` to skip its work.
+- `add(jobs)` adds jobs, eg. from a job of the batch. They go on the queue and connection of the batch.
+- `pendingJobs` counts the failed jobs too, as they can be retried (like Laravel). When a retried job is done, it counts as done.
+- `finished` is true when every job ran (done or failed), or the batch was cancelled.
+- Each count is changed in one atomic step (`UPDATE ... RETURNING` on SQLite and Postgres, a transaction with a row lock on MySQL and MariaDB). So with many workers `then`, `catchError` and `whenComplete` still run once.
+
+### Traps
+
+- A `ShouldBeUnique` job that is skipped (the same job is on the queue) is not counted in the batch.
+- A worker that crashes after a job is done, and before it counted it, leaves the batch with that job pending. Then `then` and `whenComplete` never run.
+- A chain inside a batch is not supported.
+- Batches do not use `afterCommit`: the batch is saved and its jobs are pushed at once.
+- The `sync` driver runs the jobs at `dispatch()`, one after the other, and counts them. A job that throws counts as failed: `dispatch()` does not throw. The table is still needed.
+- `Queue.fake()` keeps the batch in `batches`, and saves and runs nothing. Its jobs are not in `pushed`. `add()` adds to the faked batch, `cancel()` does nothing, and `Queue.findBatch()` gives null.
+- The queue events fire for the jobs of a batch like for any job. There are no batch events.
+
+### Prune old batches
+
+`dart run bin/queue.dart prune-batches --hours=48` deletes the batches that finished (or were cancelled) more than 48 hours ago. The default is 24. `Queue.pruneBatches(before)` does the same in code.
+
 ## Queue events
 
 Listen to the steps of a job, like Laravel `Queue::before()`:
@@ -949,6 +1056,8 @@ void main() {
 | `assertNotPushed<T>()` | no `T` job was pushed |
 | `assertNothingPushed()` | no job was pushed at all |
 | `assertChained([A, B])` | a chain of exactly these job types, in this order, was dispatched |
+| `assertBatched([test])` | a batch was dispatched. With `test`, one of them passes it. |
+| `assertBatchCount(n)` | exactly `n` batches were dispatched |
 
 A failed check throws an `AssertionError` that says what was pushed.
 

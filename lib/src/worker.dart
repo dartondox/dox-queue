@@ -202,6 +202,7 @@ class Worker {
       );
       return;
     }
+    JobBus.read(job, payload);
     await _event(QueueEventType.processing, reserved, job);
     if (job is ShouldBeUniqueUntilProcessing) await _freeUnique(payload);
     int tries = job.tries ?? options.tries;

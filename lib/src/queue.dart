@@ -4,7 +4,8 @@ import 'package:dox_core/dox_core.dart'
     show AESEncryptor, AfterResponse, Cache, CacheLock, Dox;
 import 'package:dox_mailer/dox_mailer.dart'
     show ArrayTransport, Mail, MailQueue;
-import 'package:dox_orm/dox_orm.dart' show DBDriver, QueryBuilder;
+import 'package:dox_orm/dox_orm.dart'
+    show DBDriver, Driver, QueryBuilder, SqlQueryBuilder;
 
 import 'job.dart';
 import 'job_registry.dart';
@@ -430,12 +431,18 @@ class Queue {
     }
   }
 
-  /// Run the catch job of a chain (or a job of a batch) now, like
-  /// [dispatchSync]. [error] is its [CatchesError.caughtError]. An error
-  /// of the job is logged, never thrown.
-  static Future<void> _callback(DoxJob? job, {Object? error}) async {
+  /// Run the catch job of a chain (or a callback job of a batch) now,
+  /// like [dispatchSync]. [error] is its [CatchesError.caughtError],
+  /// [batch] its [Batchable.batchId]. An error of the job is logged,
+  /// never thrown.
+  static Future<void> _callback(
+    DoxJob? job, {
+    Object? error,
+    String? batch,
+  }) async {
     if (job == null) return;
     if (error != null) _caughtErrors[job] = error;
+    if (batch != null) _batchIds[job] = batch;
     try {
       await _runNow(job);
     } catch (error, stack) {
@@ -454,6 +461,8 @@ class Queue {
     }
     String data = readData(payload.data, payload.job);
     DoxJob job = codec.decode(jsonDecode(data) as Map<String, Object?>);
+    String? batch = payload.batch;
+    if (batch != null) _batchIds[job] = batch;
     return job;
   }
 
@@ -485,6 +494,50 @@ class Queue {
   /// ]).catchError(TellAdmin(id: 1)).dispatch();
   /// ```
   static PendingChain chain(List<DoxJob> jobs) => PendingChain(jobs);
+
+  /// Opt-in: run [jobs] as one batch, like Laravel `Bus::batch()`. The
+  /// batch counts its done and failed jobs in the `job_batches` table.
+  /// See [PendingBatch].
+  /// ```
+  /// Batch batch = await Queue.batch(<DoxJob>[
+  ///   ImportRows(from: 0),
+  ///   ImportRows(from: 1000),
+  /// ]).name('import').then(ImportDone()).dispatch();
+  /// ```
+  static PendingBatch batch(List<DoxJob> jobs) => PendingBatch(jobs);
+
+  /// The batch [id] as it is now, or null when there is none. Null with
+  /// [fake] on.
+  static Future<Batch?> findBatch(String id) async {
+    if (_fake != null) return null;
+    List<Map<String, dynamic>> rows = await Batch._db.query(
+      'SELECT * FROM ${Batch.table} WHERE id = @id',
+      substitutionValues: <String, dynamic>{'id': id},
+    );
+    return rows.isEmpty ? null : Batch._fromRow(rows.first);
+  }
+
+  /// Delete the batches that finished (or were cancelled) before
+  /// [before]. Returns how many were deleted. The `prune-batches`
+  /// command of `bin/queue.dart` calls it.
+  static Future<int> pruneBatches(DateTime before) {
+    DBDriver db = Batch._db;
+    Map<String, dynamic> values = <String, dynamic>{
+      'before': before.millisecondsSinceEpoch,
+    };
+    String where = 'finished_at < @before';
+    return db.transaction(() async {
+      List<Map<String, dynamic>> rows = await db.query(
+        'SELECT COUNT(*) AS total FROM ${Batch.table} WHERE $where',
+        substitutionValues: values,
+      );
+      await db.execute(
+        'DELETE FROM ${Batch.table} WHERE $where',
+        substitutionValues: values,
+      );
+      return Batch._int(rows.first['total']);
+    });
+  }
 
   /// [dispatchSync] without the fake: the job runs, nothing is kept.
   /// A `fail()` inside `handle()` calls `failed()`. `release()` and
