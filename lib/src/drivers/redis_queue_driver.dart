@@ -4,6 +4,7 @@ import 'package:ioredis/ioredis.dart';
 
 import '../queue.dart';
 import '../queue_driver.dart';
+import '../unique_lock.dart';
 
 /// Keeps jobs in Redis. Each queue has three keys:
 /// - `<prefix>queue:<name>`: a list of jobs that are ready,
@@ -158,22 +159,63 @@ return 1''';
     await redis.del(_failed);
   }
 
-  /// counts the jobs of the three keys of a queue, then deletes them
+  /// Counts the jobs of the three keys of a queue (KEYS 1 to 3), then
+  /// renames them to the keys 4 to 6 in one step. So [clear] can read
+  /// them for unique locks while new jobs go to fresh keys. The renamed
+  /// keys end after an hour, in case the process stops before it deletes
+  /// them.
   static const String _clearScript = '''
 local total = redis.call('LLEN', KEYS[1])
   + redis.call('ZCARD', KEYS[2])
   + redis.call('ZCARD', KEYS[3])
-redis.call('DEL', KEYS[1], KEYS[2], KEYS[3])
+for i = 1, 3 do
+  if redis.call('EXISTS', KEYS[i]) == 1 then
+    redis.call('RENAME', KEYS[i], KEYS[i + 3])
+    redis.call('EXPIRE', KEYS[i + 3], 3600)
+  end
+end
 return total''';
+
+  /// the jobs are read in pages of this size, to free their unique locks
+  static const int _page = 1000;
 
   @override
   Future<int> clear(String queue) async {
-    Object? total = await redis.eval(_clearScript, 3, <Object>[
+    String tag = JobPayload.newId();
+    List<String> keys = <String>[
       _list(queue),
       _delayed(queue),
       _reserved(queue),
+    ];
+    List<String> old = <String>[for (String key in keys) '$key:clear:$tag'];
+    Object? total = await redis.eval(_clearScript, 6, <Object>[
+      ...keys,
+      ...old,
     ]);
+    // ponytail: reads every cleared job once, in pages, to free the
+    // locks of unique jobs. Redis is not blocked, but a big queue takes
+    // a while to clear.
+    await _freeUniqueLocks(<String>['LRANGE', old[0]]);
+    await _freeUniqueLocks(<String>['ZRANGE', old[1]]);
+    await _freeUniqueLocks(<String>['ZRANGE', old[2]]);
+    await redis.del(old);
     return int.parse('$total');
+  }
+
+  /// free the unique locks of the jobs that [read] (a range command and
+  /// its key, with no range yet) gives, page by page
+  Future<void> _freeUniqueLocks(List<String> read) async {
+    for (int start = 0; ; start += _page) {
+      List<Object?> page = await redis.sendCommand(<String>[
+        ...read,
+        '$start',
+        '${start + _page - 1}',
+      ]) as List<Object?>;
+      for (Object? text in page) {
+        await freeUniqueLockOf('$text');
+      }
+      if (page.length < _page) return;
+    }
   }
 
   @override

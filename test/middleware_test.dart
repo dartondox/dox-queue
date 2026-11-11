@@ -1,3 +1,5 @@
+import 'package:dox_core/dox_core.dart'
+    show AppConfig, Cache, Dox, LoggerConfig;
 import 'package:dox_queue/dox_queue.dart';
 import 'package:test/test.dart';
 
@@ -62,6 +64,9 @@ class MiddlewareJob extends DoxJob with HasMiddleware {
     'throttle' => const <JobMiddleware>[
       ThrottlesExceptions('api', maxAttempts: 1),
     ],
+    'throttle-once' => const <JobMiddleware>[
+      ThrottlesExceptions('api-once', maxAttempts: 2),
+    ],
     _ => const <JobMiddleware>[Mark('a'), Mark('b')],
   };
 
@@ -72,6 +77,9 @@ class MiddlewareJob extends DoxJob with HasMiddleware {
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
     if (mode == 'throttle') throw StateError('the api is down');
+    if (mode == 'throttle-once' && JobLog.handled.length == 1) {
+      throw StateError('the api is down once');
+    }
   }
 
   static Map<String, Object?> encode(DoxJob job) {
@@ -217,6 +225,36 @@ void main() {
       );
       await MiddlewareJob('throttle').dispatchSync();
       expect(JobLog.handled, <String>['handle throttle']);
+    });
+
+    test('ThrottlesExceptions: a run with no error resets it', () async {
+      await expectLater(
+        MiddlewareJob('throttle-once').dispatchSync(),
+        throwsStateError,
+      );
+      expect(await Cache().has('dox_queue:throttle:api-once:timer'), isTrue);
+      await MiddlewareJob('throttle-once').dispatchSync();
+      expect(JobLog.handled, hasLength(2));
+      expect(await Cache().has('dox_queue:throttle:api-once'), isFalse);
+      expect(await Cache().has('dox_queue:throttle:api-once:timer'), isFalse);
+    });
+
+    test('a release outside a worker logs a warning', () async {
+      Dox().initialize(
+        AppConfig(
+          appKey: 'k' * 32,
+          totalIsolate: 1,
+          logger: LoggerConfig(enabled: true),
+        ),
+      );
+      await useTestCache();
+      String output;
+      try {
+        output = await logOf(MiddlewareJob('release').dispatchSync);
+      } finally {
+        Dox().initialize(AppConfig(appKey: 'k' * 32, totalIsolate: 1));
+      }
+      expect(output, contains('Skip released MiddlewareJob outside a worker'));
     });
 
     test('release() outside a worker does nothing', () async {

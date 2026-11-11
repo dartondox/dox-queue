@@ -170,7 +170,7 @@ class Queue {
     QueueFake? fake = _fake;
     if (fake != null) {
       if (job is ShouldBeUnique &&
-          !fake.lockUnique(uniqueKey(_nameOf(job), job), _uniqueFor(job))) {
+          !fake.lockUnique(_uniqueKey(_nameOf(job), job), _uniqueFor(job))) {
         return '';
       }
       fake.pushed.add(
@@ -219,7 +219,7 @@ class Queue {
   ) async {
     CacheLock? lock;
     if (job is ShouldBeUnique) {
-      lock = Cache().lock(uniqueKey(_nameOf(job), job), _uniqueFor(job), id);
+      lock = Cache().lock(_uniqueKey(_nameOf(job), job), _uniqueFor(job), id);
       if (!await lock.get()) {
         QueueLog.info(
           'Queue: skipped ${job.runtimeType}, a job with the same unique '
@@ -317,26 +317,8 @@ class Queue {
 
   /// The cache lock name of a [ShouldBeUnique] job. [name] is the job
   /// name of the registry.
-  static String uniqueKey(String name, ShouldBeUnique job) {
+  static String _uniqueKey(String name, ShouldBeUnique job) {
     return 'dox_queue:unique:$name:${job.uniqueId}';
-  }
-
-  /// Free the lock of a [ShouldBeUnique] job. The worker calls it. [id]
-  /// is the job id: only the lock of this job is freed, not the lock of
-  /// a newer job after this one expired. An error is logged.
-  static Future<void> releaseUnique(
-    String name,
-    String id,
-    ShouldBeUnique job,
-  ) async {
-    try {
-      await Cache().lock(uniqueKey(name, job), null, id).release();
-    } catch (error, stack) {
-      QueueLog.danger(
-        'Queue: can not free the unique lock of $name $id: $error',
-        '$stack',
-      );
-    }
   }
 
   /// the registry name of [job], or its class name when it has none
@@ -366,6 +348,7 @@ class Queue {
       queue: queue ?? job.queue,
       data: data,
       retryUntil: job.retryUntil?.millisecondsSinceEpoch,
+      unique: job is ShouldBeUnique ? _uniqueKey(codec.name, job) : null,
     );
   }
 
@@ -402,7 +385,9 @@ class Queue {
 
   /// [dispatchSync] without the fake: the job runs, nothing is kept.
   /// A `fail()` inside `handle()` calls `failed()`. `release()` and
-  /// `delete()` do nothing here: there is no queue.
+  /// `delete()` do nothing here: there is no queue. When a middleware
+  /// releases the job (eg. `RateLimited` over its limit), `handle()` does
+  /// not run, and a warning is logged.
   static Future<void> _runNow(DoxJob job) async {
     JobRun run = JobRun(1);
     try {
@@ -418,6 +403,13 @@ class Queue {
       rethrow;
     }
     if (run.action == JobAction.fail) await job.failed(run.error!, run.stack!);
+    String? middleware = run.releasedBy;
+    if (run.action == JobAction.release && middleware != null) {
+      QueueLog.warn(
+        'Queue: $middleware released ${job.runtimeType} outside a worker. '
+        'There is no queue to put it back on, so the job did not run.',
+      );
+    }
   }
 
   /// Close the job stores of this isolate (also those of

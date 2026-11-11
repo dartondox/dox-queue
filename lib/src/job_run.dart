@@ -19,6 +19,9 @@ class JobRun {
   /// the wait of `release()`
   Duration delay = Duration.zero;
 
+  /// the class name of the middleware that called `release()`, or null
+  String? releasedBy;
+
   /// the error of `fail()`
   Object? error;
   StackTrace? stack;

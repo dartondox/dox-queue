@@ -5,6 +5,7 @@ import 'package:dox_orm/dox_orm.dart';
 import '../queue.dart';
 import '../queue_log.dart';
 import '../queue_driver.dart';
+import '../unique_lock.dart';
 
 /// Keeps jobs in the `jobs` table and failed jobs in the `failed_jobs`
 /// table (see `QueueTables`), through the dox_orm connection.
@@ -226,8 +227,48 @@ class DatabaseQueueDriver extends QueueDriver {
   }
 
   @override
-  Future<int> clear(String queue) {
-    return _deleteWhere(jobsTable, 'queue = @value', queue);
+  Future<int> clear(String queue) async {
+    DBDriver db = _db;
+    List<String> unique = <String>[];
+    int total = await db.transaction(() async {
+      // the jobs up to the last id now: a job pushed while this runs is
+      // kept, so its unique lock is never freed by mistake
+      List<Map<String, dynamic>> rows = await db.query(
+        'SELECT MAX(id) AS top FROM $jobsTable WHERE queue = @queue',
+        substitutionValues: <String, dynamic>{'queue': queue},
+      );
+      Object? top = rows.first['top'];
+      if (top == null) return 0;
+      Map<String, dynamic> values = <String, dynamic>{
+        'queue': queue,
+        'top': _int(top),
+      };
+      String where = 'queue = @queue AND id <= @top';
+      // ponytail: a LIKE scan over the queue, to read only the unique
+      // jobs. Fine for a clear, an admin command.
+      rows = await db.query(
+        'SELECT payload FROM $jobsTable WHERE $where AND payload LIKE '
+        "'%\"unique\":%'",
+        substitutionValues: values,
+      );
+      for (Map<String, dynamic> row in rows) {
+        unique.add(_text(row['payload']));
+      }
+      rows = await db.query(
+        'SELECT COUNT(*) AS total FROM $jobsTable WHERE $where',
+        substitutionValues: values,
+      );
+      await db.execute(
+        'DELETE FROM $jobsTable WHERE $where',
+        substitutionValues: values,
+      );
+      return _int(rows.first['total']);
+    });
+    // after the commit: a rollback must not free the locks
+    for (String text in unique) {
+      await freeUniqueLockOf(text);
+    }
+    return total;
   }
 
   @override

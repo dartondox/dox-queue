@@ -34,12 +34,14 @@ abstract class JobMiddleware {
   /// like `release()` of `InteractsWithQueue`: the worker does it when
   /// the run ends, and the next run counts as a new try. Set `tries`
   /// above 1 (or `retryUntil`) on a job that can be released. Outside a
-  /// worker it does nothing.
+  /// worker (`dispatchSync()`, the `sync` driver) there is no queue: the
+  /// job does not run and a warning is logged.
   void release(DoxJob job, [Duration delay = Duration.zero]) {
     JobRun? run = JobRun.of(job);
     if (run == null) return;
     run.action = JobAction.release;
     run.delay = delay;
+    run.releasedBy = '$runtimeType';
   }
 }
 
@@ -83,6 +85,10 @@ class RateLimited extends JobMiddleware {
 /// [expireAfter] frees the lock after this time, in case a worker
 /// crashed while it held it. Null: the lock is only freed when the job
 /// ends. It uses a lock of the default cache store, see [RateLimited].
+///
+/// Unlike Laravel, the class name is not part of the lock: all job
+/// classes with the same [key] share it. Put the class name in [key] when
+/// they should not.
 class WithoutOverlapping extends JobMiddleware {
   const WithoutOverlapping(
     this.key, {
@@ -150,7 +156,10 @@ class ThrottlesExceptions extends JobMiddleware {
       release(job, retryAfter);
       rethrow;
     }
-    if (hits > 0) await Cache().forget(name);
+    if (hits > 0) {
+      await Cache().forget(name);
+      await Cache().forget('$name:timer');
+    }
   }
 }
 

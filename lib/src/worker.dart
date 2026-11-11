@@ -9,6 +9,7 @@ import 'queue.dart';
 import 'queue_driver.dart';
 import 'queue_event.dart';
 import 'queue_log.dart';
+import 'unique_lock.dart';
 
 /// Settings of a [Worker]. The flags of `bin/queue.dart work` set them.
 class WorkerOptions {
@@ -190,6 +191,7 @@ class Worker {
       // no retry: the job can not be read, a retry gives the same error
       QueueLog.danger('Queue: failed $label: $error');
       await driver.fail(reserved, '$error\n$stack');
+      await _freeUnique(payload);
       await _event(
         QueueEventType.failed,
         reserved,
@@ -200,9 +202,7 @@ class Worker {
       return;
     }
     await _event(QueueEventType.processing, reserved, job);
-    if (job is ShouldBeUniqueUntilProcessing) {
-      await Queue.releaseUnique(payload.job, payload.id, job);
-    }
+    if (job is ShouldBeUniqueUntilProcessing) await _freeUnique(payload);
     int tries = job.tries ?? options.tries;
     if (reserved.attempts > 1 &&
         _noTryLeft(job, payload, reserved.attempts - 1)) {
@@ -316,8 +316,14 @@ class Worker {
   /// free the lock of a [ShouldBeUnique] job, unless it was freed at the
   /// start ([ShouldBeUniqueUntilProcessing])
   Future<void> _releaseUnique(ReservedJob reserved, DoxJob job) async {
-    if (job is! ShouldBeUnique || job is ShouldBeUniqueUntilProcessing) return;
-    await Queue.releaseUnique(reserved.payload.job, reserved.payload.id, job);
+    if (job is ShouldBeUniqueUntilProcessing) return;
+    await _freeUnique(reserved.payload);
+  }
+
+  /// free the unique lock saved in [payload], if it has one
+  static Future<void> _freeUnique(JobPayload payload) async {
+    String? name = payload.unique;
+    if (name != null) await releaseUniqueLock(name, payload.id);
   }
 
   /// do what the job asked for with `release()`, `fail()` or `delete()`
