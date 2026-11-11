@@ -16,12 +16,15 @@ import '../queue_driver.dart';
 ///   at a time, so two workers never get the same job.
 ///
 /// The worker sets `reserved_at`. When it crashes, the job is free again
-/// after [retryAfter]. Times are unix time in milliseconds.
+/// after [retryAfter]. Times are unix time in milliseconds, but
+/// `failed_jobs.failed_at` is a UTC timestamp when [failedAtTimestamp] is
+/// true.
 class DatabaseQueueDriver extends QueueDriver {
   DatabaseQueueDriver({
     this.connection,
     this.retryAfter = const Duration(seconds: 90),
     this.queueConnection,
+    this.failedAtTimestamp = false,
   });
 
   /// the dox_orm connection name. Null: the default connection.
@@ -38,6 +41,13 @@ class DatabaseQueueDriver extends QueueDriver {
   /// the column existed works without it. After you add the column,
   /// restart the workers.
   bool? _hasConnectionColumn;
+
+  /// Opt-in: `failed_jobs.failed_at` is a timestamp column (UTC), not
+  /// unix time in milliseconds. See `QueueConfig.failedAtTimestamp`.
+  final bool failedAtTimestamp;
+
+  /// the check of the `failed_at` column type, made once per driver
+  Future<void>? _failedAtChecked;
 
   static const String jobsTable = 'jobs';
   static const String failedTable = 'failed_jobs';
@@ -141,6 +151,7 @@ class DatabaseQueueDriver extends QueueDriver {
     DBDriver db = _db;
     JobPayload payload = job.payload.withAttempts(job.attempts);
     String? name = queueConnection;
+    await _checkFailedAt(db);
     // outside the transaction: on Postgres a failed query there would
     // break it. The main connection never reads it: NULL is the default.
     bool withName =
@@ -161,7 +172,7 @@ class DatabaseQueueDriver extends QueueDriver {
           'queue': payload.queue,
           'payload': payload.encode(),
           'error': error,
-          'now': QueueDriver.now(),
+          'now': _failedAtValue(QueueDriver.now()),
         },
       );
       await db.execute(
@@ -173,7 +184,9 @@ class DatabaseQueueDriver extends QueueDriver {
 
   @override
   Future<List<FailedJob>> failed() async {
-    List<Map<String, dynamic>> rows = await _db.query(
+    DBDriver db = _db;
+    await _checkFailedAt(db);
+    List<Map<String, dynamic>> rows = await db.query(
       'SELECT uuid, queue, payload, exception, failed_at FROM $failedTable '
       'ORDER BY id',
     );
@@ -183,6 +196,7 @@ class DatabaseQueueDriver extends QueueDriver {
   @override
   Future<bool> retry(String id) async {
     DBDriver db = _db;
+    await _checkFailedAt(db);
     return db.transaction(() async {
       FailedJob? job = await _find(db, id);
       if (job == null) return false;
@@ -195,6 +209,7 @@ class DatabaseQueueDriver extends QueueDriver {
   @override
   Future<bool> forget(String id) async {
     DBDriver db = _db;
+    await _checkFailedAt(db);
     if (await _find(db, id) == null) return false;
     await _forget(db, id);
     return true;
@@ -211,11 +226,59 @@ class DatabaseQueueDriver extends QueueDriver {
   }
 
   @override
-  Future<int> pruneFailed(DateTime before) {
+  Future<int> pruneFailed(DateTime before) async {
+    await _checkFailedAt(_db);
     return _deleteWhere(
       failedTable,
       'failed_at < @value',
-      before.millisecondsSinceEpoch,
+      _failedAtValue(before.millisecondsSinceEpoch),
+    );
+  }
+
+  /// [millis] as the `failed_at` value: the number, or a UTC time. Both
+  /// keep milliseconds only, so SQLite text compares in time order.
+  Object _failedAtValue(int millis) {
+    if (!failedAtTimestamp) return millis;
+    return DateTime.fromMillisecondsSinceEpoch(millis, isUtc: true);
+  }
+
+  /// Throws a [StateError] when the type of `failed_at` does not match
+  /// [failedAtTimestamp], so a wrong value is never written. The type is
+  /// read once per driver; after a failed check every call throws.
+  /// Without the table it checks again on the next call.
+  Future<void> _checkFailedAt(DBDriver db) {
+    return _failedAtChecked ??= _readFailedAt(db);
+  }
+
+  Future<void> _readFailedAt(DBDriver db) async {
+    List<Map<String, dynamic>> rows = await db.query(switch (db.getName()) {
+      Driver.sqlite =>
+        "SELECT type FROM pragma_table_info('$failedTable') "
+            "WHERE name = 'failed_at'",
+      Driver.postgres =>
+        'SELECT data_type FROM information_schema.columns '
+            'WHERE table_schema = current_schema() AND table_name = '
+            "'$failedTable' AND column_name = 'failed_at'",
+      Driver.mysql =>
+        'SELECT data_type FROM information_schema.columns '
+            'WHERE table_schema = DATABASE() AND table_name = '
+            "'$failedTable' AND column_name = 'failed_at'",
+    });
+    if (rows.isEmpty) {
+      _failedAtChecked = null;
+      return;
+    }
+    String type = '${rows.first.values.first}'.toLowerCase();
+    bool isTime = type.contains('time') || type.contains('date');
+    if (isTime == failedAtTimestamp) return;
+    throw StateError(
+      isTime
+          ? '$failedTable.failed_at is a $type column, but '
+                'QueueConfig.failedAtTimestamp is false. Set it to true.'
+          : '$failedTable.failed_at is a $type column, but '
+                'QueueConfig.failedAtTimestamp is true. Change the column '
+                'to a timestamp first (see the queue docs), or set it to '
+                'false.',
     );
   }
 
@@ -266,8 +329,15 @@ class DatabaseQueueDriver extends QueueDriver {
       queue: _text(row['queue']),
       payload: _text(row['payload']),
       error: _text(row['exception']),
-      failedAt: DateTime.fromMillisecondsSinceEpoch(_int(row['failed_at'])),
+      failedAt: _time(row['failed_at']),
     );
+  }
+
+  /// `failed_at`: a UTC time from a timestamp column, or unix time in
+  /// milliseconds. Both give the same local [DateTime].
+  static DateTime _time(Object? value) {
+    if (value is DateTime) return value.toLocal();
+    return DateTime.fromMillisecondsSinceEpoch(_int(value));
   }
 
   /// drivers give a number as int, or as text (eg. mysql bigint)

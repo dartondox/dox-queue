@@ -40,6 +40,7 @@ class QueueConfig {
     this.serializeSync = false,
     this.connections = const <String, QueueConfig>{},
     this.afterCommit = false,
+    this.failedAtTimestamp = false,
   });
 
   /// `sync`, `redis` or `database`.
@@ -97,7 +98,8 @@ class QueueConfig {
   /// `--connection=database`.
   ///
   /// Each entry uses only its [driver], [redis], [prefix],
-  /// [connection], [retryAfter] and [serializeSync]. The [jobs] of
+  /// [connection], [retryAfter], [serializeSync] and
+  /// [failedAtTimestamp]. The [jobs] of
   /// this config count for all connections.
   ///
   /// Two `database` connections on the same dox_orm [connection] share
@@ -113,6 +115,17 @@ class QueueConfig {
   /// default): the job is pushed at once. Only the main config counts,
   /// not the entries of [connections].
   final bool afterCommit;
+
+  /// Opt-in, for the `database` driver: `failed_jobs.failed_at` is a
+  /// timestamp column in UTC, like Laravel. False (the default): it is
+  /// a big integer, unix time in milliseconds. It must match the table:
+  /// make the table with `QueueTables.up(schema, failedAtTimestamp:
+  /// true)`. The driver checks the column once, on the first use of
+  /// `failed_jobs`, and throws a [StateError] when it does not match.
+  ///
+  /// It counts per connection: each entry of [connections] has its own,
+  /// as each can use its own table. The Redis driver does not use it.
+  final bool failedAtTimestamp;
 
   /// The config of the queue connection [name]. Null: this config, the
   /// main connection. Throws an [ArgumentError] for an unknown name.
@@ -146,6 +159,7 @@ class QueueConfig {
           connection: connection,
           retryAfter: retryAfter,
           queueConnection: name,
+          failedAtTimestamp: failedAtTimestamp,
         );
     }
     throw ArgumentError.value(
