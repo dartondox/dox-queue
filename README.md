@@ -593,6 +593,55 @@ class UpdateSearchIndex extends DoxJob with ShouldBeUnique {
 - `Queue.fake()` keeps its own locks. `clear()` of the fake frees them.
 - When a worker crashes, or `clear` stops in the middle, the locks of those jobs are not freed. With no `uniqueFor` such a lock never ends: `dispatch()` keeps returning `''` until you delete the cache key (`dox_queue:unique:<job name>:<uniqueId>`). So set `uniqueFor` on unique jobs.
 
+## Job chains
+
+Run jobs one after the other, like Laravel `Bus::chain()`. The next job is pushed only when the job before it is done.
+
+```dart
+await Queue.chain(<DoxJob>[
+  ResizeImage(imageId: 1),
+  UploadImage(imageId: 1),
+  TellUser(imageId: 1),
+]).catchError(TellAdmin(imageId: 1)).dispatch(queue: 'images');
+```
+
+- The rest of the chain is saved in the payload of the job that runs now. So it works across worker processes and restarts.
+- A job that is released or retried keeps the chain. The chain goes on only after it is done.
+- A job that ends with `delete()`, or that a middleware skips, counts as done. The chain goes on.
+- When a job fails for good, the rest of the chain is dropped and the catch job runs.
+- `queue:retry` of the failed job brings the chain back: when it is then done, the chain goes on.
+- `dispatch()` returns the id of the first job. `queue` and `connection` count for every job. `delay` counts for the first job only.
+
+### The catch job
+
+A function can not be saved in the queue. So the catch handler is a job too, of a class in `jobRegistry`. It runs once, in the worker where the job failed, like `dispatchSync()`: no queue, no retry. Add the `CatchesError` mixin to read the error:
+
+```dart
+@Job()
+class TellAdmin extends DoxJob with CatchesError {
+  TellAdmin({required this.imageId});
+
+  final int imageId;
+
+  @override
+  Future<void> handle() async {
+    await alertAdmin('image $imageId failed: $caughtError');
+  }
+}
+```
+
+An error in the catch job is logged. For slow work, dispatch a new job from it.
+
+### Traps
+
+- Each job carries the data of the jobs after it. Keep chains short, and save ids, not big data, in the jobs.
+- `ShouldBeEncrypted` jobs stay encrypted inside the payload of the job before them.
+- A `ShouldBeUnique` job in the chain that is skipped (the same job is on the queue) stops the chain. The catch job runs with a `StateError`. When the first job is skipped, `dispatch()` returns `''` and nothing runs.
+- A next job that can not be read (eg. its class was removed) stops the chain. The catch job runs with the error.
+- A worker that crashes after a job is done, and before it pushed the next job, drops the rest of the chain.
+- The `sync` driver runs the jobs now, one after the other. When one throws, the catch job runs and `dispatch()` throws the error.
+- `Queue.fake()` keeps the chain in `chains`. Its jobs are not in `pushed`.
+
 ## Queue events
 
 Listen to the steps of a job, like Laravel `Queue::before()`:
@@ -899,6 +948,7 @@ void main() {
 | `assertPushedTimes<T>(n)` | exactly `n` `T` jobs were pushed |
 | `assertNotPushed<T>()` | no `T` job was pushed |
 | `assertNothingPushed()` | no job was pushed at all |
+| `assertChained([A, B])` | a chain of exactly these job types, in this order, was dispatched |
 
 A failed check throws an `AssertionError` that says what was pushed.
 

@@ -16,6 +16,8 @@ import 'queue_fake.dart';
 import 'queue_log.dart';
 import 'send_queued_mail.dart';
 
+part 'job_bus.dart';
+
 /// Puts jobs on the queue. `QueueProvider` sets it up in every isolate.
 /// ```
 /// await Queue.dispatch(SendWelcomeEmail(userId: 1));
@@ -159,6 +161,27 @@ class Queue {
     DateTime? delayUntil,
     String? connection,
     bool? afterCommit,
+  }) {
+    return _dispatch(
+      job,
+      delay: delay,
+      queue: queue,
+      delayUntil: delayUntil,
+      connection: connection,
+      afterCommit: afterCommit,
+    );
+  }
+
+  /// [dispatch], with the rest of a chain in the payload
+  static Future<String> _dispatch(
+    DoxJob job, {
+    Duration? delay,
+    String? queue,
+    DateTime? delayUntil,
+    String? connection,
+    bool? afterCommit,
+    List<Map<String, Object?>>? chain,
+    Map<String, Object?>? chainCatch,
   }) async {
     if (delayUntil != null) {
       if (delay != null) {
@@ -189,32 +212,43 @@ class Queue {
     if ((afterCommit ?? config.afterCommit) && DBDriver.inTransaction) {
       // a wrong job or a value that is not JSON throws now, not at commit
       JobPayload? payload = settings.driver != 'sync' || settings.serializeSync
-          ? _payload(job, id, queue, jobs)
+          ? _payload(job, id, queue, jobs, chain: chain, chainCatch: chainCatch)
           : null;
       // ponytail: waits for the default dox_orm connection only. A
       // ShouldBeUnique job takes its lock at the commit, so a rollback
       // leaves no lock. The id is returned, also when it is then skipped.
       await QueryBuilder.afterCommit(
-        () => _send(job, id, payload, settings, connection, delay),
+        () => _send(job, id, payload, _target(settings, connection), delay),
       );
       return id;
     }
     JobPayload? payload = settings.driver != 'sync' || settings.serializeSync
-        ? _payload(job, id, queue, jobs)
+        ? _payload(job, id, queue, jobs, chain: chain, chainCatch: chainCatch)
         : null;
-    bool sent = await _send(job, id, payload, settings, connection, delay);
+    bool sent = await _send(
+      job,
+      id,
+      payload,
+      _target(settings, connection),
+      delay,
+    );
     return sent ? id : '';
   }
 
-  /// Push [payload], or run the job with the `sync` driver. [payload] is
-  /// null only for `sync` without `serializeSync`: then [job] runs as it is.
-  /// False when a [ShouldBeUnique] job was skipped.
+  /// the store of [connection], or null for the `sync` driver
+  static QueueDriver? _target(QueueConfig settings, String? connection) {
+    return settings.driver == 'sync' ? null : driverOf(connection);
+  }
+
+  /// Push [payload] to [driver], or run the job when [driver] is null
+  /// (the `sync` driver). [payload] is null only for `sync` without
+  /// `serializeSync`: then [job] runs as it is. False when a
+  /// [ShouldBeUnique] job was skipped.
   static Future<bool> _send(
     DoxJob job,
     String id,
     JobPayload? payload,
-    QueueConfig settings,
-    String? connection,
+    QueueDriver? driver,
     Duration? delay,
   ) async {
     CacheLock? lock;
@@ -228,7 +262,7 @@ class Queue {
         return false;
       }
     }
-    if (settings.driver == 'sync') {
+    if (driver == null) {
       try {
         if (payload == null) {
           await _runNow(job);
@@ -243,7 +277,7 @@ class Queue {
       return true;
     }
     try {
-      await driverOf(connection).push(payload!, delay: delay ?? Duration.zero);
+      await driver.push(payload!, delay: delay ?? Duration.zero);
     } catch (_) {
       await lock?.release();
       rethrow;
@@ -337,8 +371,11 @@ class Queue {
     DoxJob job,
     String id,
     String? queue,
-    JobRegistry jobs,
-  ) {
+    JobRegistry jobs, {
+    List<Map<String, Object?>>? chain,
+    Map<String, Object?>? chainCatch,
+    String? batch,
+  }) {
     JobCodec codec = jobs.of(job);
     String data = jsonEncode(codec.encode(job), toEncodable: _toJson);
     if (job is ShouldBeEncrypted) data = encryptData(data, codec.name);
@@ -349,7 +386,61 @@ class Queue {
       data: data,
       retryUntil: job.retryUntil?.millisecondsSinceEpoch,
       unique: job is ShouldBeUnique ? _uniqueKey(codec.name, job) : null,
+      chain: chain,
+      chainCatch: chainCatch,
+      batch: batch,
     );
+  }
+
+  /// [job] as an entry of a chain or a batch: its name, queue and data
+  /// (encrypted for a [ShouldBeEncrypted] job)
+  static Map<String, Object?> _item(
+    DoxJob job,
+    String? queue,
+    JobRegistry jobs,
+  ) {
+    JobPayload payload = _payload(job, '', queue, jobs);
+    return <String, Object?>{
+      'job': payload.job,
+      'queue': payload.queue,
+      'data': payload.data,
+    };
+  }
+
+  /// the job of an [_item]. Throws when it can not be read.
+  static DoxJob _itemJob(Map<String, Object?> item, JobRegistry jobs) {
+    return _decode(
+      jobs,
+      JobPayload(
+        id: '',
+        job: item['job'] as String,
+        queue: item['queue'] as String? ?? 'default',
+        data: item['data'] as String,
+      ),
+    );
+  }
+
+  /// [_itemJob], or null (and a log) when it can not be read
+  static DoxJob? _readItem(Map<String, Object?> item, JobRegistry jobs) {
+    try {
+      return _itemJob(item, jobs);
+    } catch (error) {
+      QueueLog.danger('Queue: can not read the job ${item['job']}: $error');
+      return null;
+    }
+  }
+
+  /// Run the catch job of a chain (or a job of a batch) now, like
+  /// [dispatchSync]. [error] is its [CatchesError.caughtError]. An error
+  /// of the job is logged, never thrown.
+  static Future<void> _callback(DoxJob? job, {Object? error}) async {
+    if (job == null) return;
+    if (error != null) _caughtErrors[job] = error;
+    try {
+      await _runNow(job);
+    } catch (error, stack) {
+      QueueLog.danger('Queue: ${job.runtimeType} threw: $error', '$stack');
+    }
   }
 
   /// the job of a saved [payload]. Throws when its name is not in [jobs]
@@ -362,7 +453,8 @@ class Queue {
       );
     }
     String data = readData(payload.data, payload.job);
-    return codec.decode(jsonDecode(data) as Map<String, Object?>);
+    DoxJob job = codec.decode(jsonDecode(data) as Map<String, Object?>);
+    return job;
   }
 
   /// Run [job] now, in this process, with no queue. When it throws,
@@ -382,6 +474,17 @@ class Queue {
     _fake?.dispatchedAfterResponse.add(job);
     AfterResponse.run(() => _runNow(job));
   }
+
+  /// Opt-in: run [jobs] one after the other, like Laravel `Bus::chain()`.
+  /// The next job is pushed only after the one before it is done. When
+  /// one fails for good, the rest is dropped. See [PendingChain].
+  /// ```
+  /// await Queue.chain(<DoxJob>[
+  ///   ResizeImage(id: 1),
+  ///   UploadImage(id: 1),
+  /// ]).catchError(TellAdmin(id: 1)).dispatch();
+  /// ```
+  static PendingChain chain(List<DoxJob> jobs) => PendingChain(jobs);
 
   /// [dispatchSync] without the fake: the job runs, nothing is kept.
   /// A `fail()` inside `handle()` calls `failed()`. `release()` and

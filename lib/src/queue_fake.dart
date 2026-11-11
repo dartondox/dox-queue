@@ -1,4 +1,5 @@
 import 'job.dart';
+import 'queue.dart';
 
 /// A job that `Queue.dispatch()` got while `Queue.fake()` was on.
 class PushedJob {
@@ -32,6 +33,10 @@ class QueueFake {
   /// every job of `dispatchAfterResponse()`, oldest first. The fake does
   /// not stop them: they still run. They are not in [pushed].
   final List<DoxJob> dispatchedAfterResponse = <DoxJob>[];
+
+  /// every chain of `Queue.chain(...).dispatch()`, oldest first. Its
+  /// jobs are not in [pushed].
+  final List<PendingChain> chains = <PendingChain>[];
 
   /// the unique locks of [ShouldBeUnique] jobs: key and end time (null:
   /// no end). The fake has no worker, so only [clear] frees them.
@@ -98,6 +103,26 @@ class QueueFake {
     }
   }
 
+  /// A chain of jobs of exactly these [types], in this order, was
+  /// dispatched.
+  /// ```
+  /// queue.assertChained(<Type>[ResizeImage, UploadImage]);
+  /// ```
+  void assertChained(List<Type> types) {
+    for (PendingChain chain in chains) {
+      List<Type> chained = <Type>[
+        for (DoxJob job in chain.jobs) job.runtimeType,
+      ];
+      if (_sameTypes(chained, types)) return;
+    }
+    String seen = chains.isEmpty
+        ? 'No chains were dispatched.'
+        : 'Chains: ${chains.map(_chainNames).join('; ')}.';
+    throw AssertionError(
+      'Expected a chain of ${types.join(', ')} to be dispatched. $seen',
+    );
+  }
+
   /// No job was pushed at all.
   void assertNothingPushed() {
     if (pushed.isNotEmpty) {
@@ -105,10 +130,11 @@ class QueueFake {
     }
   }
 
-  /// forget the pushed jobs, the jobs of [dispatchedSync] and
-  /// [dispatchedAfterResponse], and the unique locks
+  /// forget the pushed jobs, the [chains], the jobs of [dispatchedSync]
+  /// and [dispatchedAfterResponse], and the unique locks
   void clear() {
     pushed.clear();
+    chains.clear();
     _uniqueLocks.clear();
     dispatchedSync.clear();
     dispatchedAfterResponse.clear();
@@ -141,6 +167,20 @@ class QueueFake {
   static String _plural(int count, String word) {
     return count == 1 ? word : '${word}s';
   }
+
+  static bool _sameTypes(List<Type> a, List<Type> b) {
+    if (a.length != b.length) return false;
+    for (int i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  static String _chainNames(PendingChain chain) {
+    return chain.jobs.map(_jobName).join(', ');
+  }
+
+  static String _jobName(DoxJob job) => '${job.runtimeType}';
 
   static String _name(PushedJob item) => '${item.job.runtimeType}';
 

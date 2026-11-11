@@ -192,6 +192,7 @@ class Worker {
       QueueLog.danger('Queue: failed $label: $error');
       await driver.fail(reserved, '$error\n$stack');
       await _freeUnique(payload);
+      await JobBus.failed(payload, jobs, error);
       await _event(
         QueueEventType.failed,
         reserved,
@@ -283,10 +284,12 @@ class Worker {
     QueueLog.success('Queue: done $label in ${watch.elapsedMilliseconds}ms');
   }
 
-  /// the job ended: delete it and free its unique lock
+  /// the job ended: delete it, free its unique lock and push the next
+  /// job of its chain
   Future<void> _finish(ReservedJob reserved, DoxJob job) async {
     await driver.delete(reserved);
     await _releaseUnique(reserved, job);
+    await JobBus.done(reserved.payload, driver, jobs);
     await _event(QueueEventType.processed, reserved, job);
   }
 
@@ -423,6 +426,7 @@ class Worker {
         '$hookStack',
       );
     }
+    await JobBus.failed(reserved.payload, jobs, error);
     await _event(
       QueueEventType.failed,
       reserved,
