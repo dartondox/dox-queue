@@ -1,3 +1,4 @@
+import 'package:dox_core/dox_core.dart' show AppConfig, Dox, LoggerConfig;
 import 'package:dox_orm/dox_orm.dart';
 import 'package:dox_queue/dox_queue.dart';
 import 'package:test/test.dart';
@@ -45,6 +46,9 @@ class _FlakyDriver extends DBDriver {
   final DBDriver inner;
   int failures = 1;
 
+  /// how many column type queries ran, the failed ones too
+  int typeQueries = 0;
+
   @override
   Driver getName() => inner.getName();
 
@@ -60,6 +64,7 @@ class _FlakyDriver extends DBDriver {
     bool typeQuery =
         query.contains('pragma_table_info') ||
         query.contains('information_schema');
+    if (typeQuery) typeQueries++;
     if (typeQuery && failures > 0) {
       failures--;
       throw Exception('connection lost');
@@ -214,8 +219,17 @@ void main() {
         });
 
         test('a type query that fails is not kept', () async {
+          // log on, so the test can read the warning
+          Dox().initialize(
+            AppConfig(
+              appKey: 'k' * 32,
+              totalIsolate: 1,
+              logger: LoggerConfig(enabled: true),
+            ),
+          );
           DBDriver old = SqlQueryBuilder().dbDriver;
-          SqlQueryBuilder().dbDriver = _FlakyDriver(db());
+          _FlakyDriver flakyDb = _FlakyDriver(db());
+          SqlQueryBuilder().dbDriver = flakyDb;
           QueueDriver flaky = QueueConfig(
             driver: 'database',
             failedAtTimestamp: timestamp,
@@ -223,18 +237,34 @@ void main() {
           try {
             await flaky.push(_payload('a'));
             ReservedJob job = (await flaky.pop('default'))!;
-            if (timestamp) {
-              // the setting on: no blind write, the error goes up
-              await expectLater(flaky.fail(job, 'boom'), throwsException);
-              expect(await flaky.failed(), isEmpty);
-            }
-            // the setting off: it goes on as without the check. On: the
-            // next call reads the type again and works.
-            await flaky.fail(job, 'boom');
-            await failJob(flaky, 'b');
-            expect((await flaky.failed()).map(_id), <String>['a', 'b']);
+            String log = await logOf(() async {
+              if (timestamp) {
+                // the setting on: no blind write, the error goes up
+                await expectLater(flaky.fail(job, 'boom'), throwsException);
+                expect(await flaky.failed(), isEmpty);
+              } else {
+                // the setting off: it goes on as without the check
+                await flaky.fail(job, 'boom');
+              }
+            });
+            expect(
+              'can not read the type'.allMatches(log),
+              hasLength(timestamp ? 0 : 1),
+            );
+            // the failed read was not kept: the next call reads again
+            if (!timestamp) await failJob(flaky, 'b');
+            expect(flakyDb.typeQueries, 2);
+            // the good result is kept: no more type queries
+            if (timestamp) await flaky.fail(job, 'boom');
+            await failJob(flaky, 'c');
+            expect(flakyDb.typeQueries, 2);
+            expect(
+              (await flaky.failed()).map(_id),
+              timestamp ? <String>['a', 'c'] : <String>['a', 'b', 'c'],
+            );
           } finally {
             SqlQueryBuilder().dbDriver = old;
+            Dox().initialize(AppConfig(appKey: 'k' * 32, totalIsolate: 1));
           }
         });
 
