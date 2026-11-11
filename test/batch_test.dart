@@ -11,7 +11,8 @@ List<String> calls = <String>[];
 
 /// A job of a batch. [mode]: `ok`, `throw` (fails for good), `retry`
 /// (throws on the first try), `check` (skips its work when the batch was
-/// cancelled), `add` (adds a job to its batch) or `slow` (waits a bit).
+/// cancelled), `add` (adds a job to its batch), `slow` (waits a bit) or
+/// `flaky` (throws on its first run, works after).
 class BatchStep extends DoxJob with Batchable, InteractsWithQueue {
   BatchStep(this.key, [this.mode = 'ok']);
 
@@ -29,6 +30,11 @@ class BatchStep extends DoxJob with Batchable, InteractsWithQueue {
     }
     JobLog.handled.add(key);
     if (mode == 'throw') throw StateError('$key broken');
+    if (mode == 'flaky') {
+      int run = (JobLog.runs[key] ?? 0) + 1;
+      JobLog.runs[key] = run;
+      if (run == 1) throw StateError('$key flaky');
+    }
     if (mode == 'retry' && attempts() == 1) throw StateError('$key once');
     if (mode == 'add') await (await batch())!.add(<DoxJob>[BatchStep('extra')]);
     if (mode == 'slow') {
@@ -279,12 +285,97 @@ void main() {
 
       test('a skipped unique job is not counted', () async {
         await UniqueBatchStep().dispatch(delay: const Duration(minutes: 1));
-        Batch batch = await Queue.batch(<DoxJob>[
-          BatchStep('a'),
-          UniqueBatchStep(),
-        ]).dispatch();
+        Batch batch = await batchOf(<DoxJob>[BatchStep('a'), UniqueBatchStep()])
+            .dispatch();
         expect(batch.totalJobs, 1);
         expect(batch.pendingJobs, 1);
+        // no job ran: no progress
+        expect(calls, <String>['before']);
+      });
+
+      test('a batch of only a skipped unique job ends at once', () async {
+        await UniqueBatchStep().dispatch(delay: const Duration(minutes: 1));
+        Batch batch = await batchOf(<DoxJob>[UniqueBatchStep()]).dispatch();
+        expect(batch.totalJobs, 0);
+        expect(batch.finished, isTrue);
+        expect(calls, <String>['before', 'then', 'finally']);
+      });
+
+      Worker once() {
+        return Worker(
+          driver: Queue.driver,
+          jobs: registry,
+          options: const WorkerOptions(once: true),
+        );
+      }
+
+      Future<String> failedId() async {
+        return (await Queue.driver.failed()).single.id;
+      }
+
+      test('a retried job that fails again is counted once', () async {
+        Batch batch = await batchOf(<DoxJob>[
+          BatchStep('a', 'throw'),
+          BatchStep('b'),
+        ]).allowFailures().dispatch();
+        await once().run(); // a fails
+        ReservedJob? b = await Queue.driver.pop('default');
+        expect(await Queue.driver.retry(await failedId()), isTrue);
+        await once().run(); // a fails again
+        Batch? now = await Queue.findBatch(batch.id);
+        expect(now?.failedJobs, 1);
+        expect(now?.pendingJobs, 2);
+        expect(now?.finished, isFalse);
+        await once().process(b!);
+        now = await Queue.findBatch(batch.id);
+        expect(now?.finished, isTrue);
+        expect(calls, <String>[
+          'before',
+          'progress',
+          'catch: Bad state: a broken',
+          'progress',
+          'finally',
+        ]);
+      });
+
+      test('a retried job that works is no longer failed', () async {
+        Batch batch = await batchOf(<DoxJob>[
+          BatchStep('a', 'flaky'),
+          BatchStep('b'),
+        ]).allowFailures().dispatch();
+        await once().run(); // a fails
+        ReservedJob? b = await Queue.driver.pop('default');
+        expect(await Queue.driver.retry(await failedId()), isTrue);
+        await once().run(); // a works now
+        Batch? now = await Queue.findBatch(batch.id);
+        expect(now?.failedJobs, 0);
+        expect(now?.pendingJobs, 1);
+        expect(now?.finished, isFalse);
+        await once().process(b!);
+        now = await Queue.findBatch(batch.id);
+        expect(now?.pendingJobs, 0);
+        expect(now?.finished, isTrue);
+        expect(calls, <String>[
+          'before',
+          'progress',
+          'catch: Bad state: a flaky',
+          'progress',
+          'progress',
+          'then',
+          'finally',
+        ]);
+      });
+
+      test('add() to a finished batch throws and pushes nothing', () async {
+        Batch batch = await Queue.batch(<DoxJob>[BatchStep('a')]).dispatch();
+        await work();
+        await expectLater(
+          batch.add(<DoxJob>[BatchStep('b')]),
+          throwsA(isA<StateError>()),
+        );
+        expect(await Queue.driver.pop('default'), isNull);
+        Batch? now = await Queue.findBatch(batch.id);
+        expect(now?.totalJobs, 1);
       });
 
       test('the jobs carry the batch id, a plain job does not', () async {
@@ -317,6 +408,84 @@ void main() {
       expect(await Queue.findBatch(done.id), isNull);
       expect(await Queue.findBatch(open.id), isNotNull);
     });
+  });
+
+  group('batches on sqlite, errors', () {
+    setUp(() async {
+      await testStores.first.reset();
+      await resetBatches('sqlite');
+      Queue.configure(
+        QueueConfig(
+          driver: 'database',
+          jobs: registry,
+          connection: 'sqlite',
+          connections: <String, QueueConfig>{
+            // no jobs table there: every push throws
+            'broken': QueueConfig(
+              driver: 'database',
+              connection: 'sqlite_other',
+            ),
+          },
+        ),
+      );
+    });
+
+    tearDown(Queue.close);
+
+    test('an empty batch throws', () {
+      expect(() => Queue.batch(<DoxJob>[]), throwsArgumentError);
+    });
+
+    test('a push that throws cancels the batch', () async {
+      await expectLater(
+        Queue.batch(<DoxJob>[BatchStep('a'), BatchStep('b')])
+            .then(Callback('then'))
+            .dispatch(connection: 'broken'),
+        throwsA(anything),
+      );
+      List<Map<String, dynamic>> rows = await SqlQueryBuilder()
+          .getDBDriver('sqlite')
+          .query('SELECT id FROM job_batches');
+      Batch? batch = await Queue.findBatch('${rows.single['id']}');
+      expect(batch?.totalJobs, 0);
+      expect(batch?.pendingJobs, 0);
+      expect(batch?.cancelled, isTrue);
+      expect(batch?.finished, isTrue);
+      expect(calls, isEmpty);
+    });
+
+    test('add() to a deleted batch throws', () async {
+      Batch batch = await Queue.batch(<DoxJob>[BatchStep('a')]).dispatch();
+      await SqlQueryBuilder()
+          .getDBDriver('sqlite')
+          .execute('DELETE FROM job_batches');
+      await expectLater(
+        batch.add(<DoxJob>[BatchStep('b')]),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('pruneBatches can delete old unfinished batches', () async {
+      Batch open = await Queue.batch(<DoxJob>[BatchStep('a')]).dispatch();
+      DateTime later = DateTime.now().add(const Duration(hours: 1));
+      expect(await Queue.pruneBatches(later), 0);
+      expect(await Queue.pruneBatches(later, unfinishedBefore: later), 1);
+      expect(await Queue.findBatch(open.id), isNull);
+    });
+  });
+
+  test('a missing job_batches table gives a clear error', () async {
+    Queue.configure(QueueConfig(jobs: registry, connection: 'sqlite_other'));
+    await expectLater(
+      Queue.batch(<DoxJob>[BatchStep('a')]).dispatch(),
+      throwsA(
+        isA<StateError>().having(
+          (StateError error) => error.message,
+          'message',
+          contains('QueueTables.upBatches()'),
+        ),
+      ),
+    );
   });
 
   group('batches with the sync driver', () {
@@ -389,5 +558,24 @@ void main() {
       '"attempts":0}',
     );
     expect(payload.batch, isNull);
+    expect(payload.batchFailed, isFalse);
+  });
+
+  test('a retried batch job is marked, a plain one is not', () {
+    JobPayload plain = JobPayload(
+      id: '1',
+      job: 'BatchStep',
+      queue: 'default',
+      data: '{}',
+    ).retried();
+    expect(plain.encode(), isNot(contains('batchFailed')));
+    JobPayload inBatch = JobPayload(
+      id: '1',
+      job: 'BatchStep',
+      queue: 'default',
+      data: '{}',
+      batch: 'b1',
+    ).retried();
+    expect(JobPayload.decode(inBatch.encode()).batchFailed, isTrue);
   });
 }

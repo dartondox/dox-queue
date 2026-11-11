@@ -113,33 +113,37 @@ class JobBus {
     if (batch != null) _batchIds[job] = batch;
   }
 
-  /// The job of [payload] is done: push the next job of its chain, and
-  /// count it as done in its batch. An error here is logged: the job
-  /// itself is done.
-  static Future<void> done(
+  /// The job of [payload] is done: push the next job of its chain.
+  /// The worker does it before it deletes the job. A push that throws
+  /// goes to the caller: the try of the job then counts as failed.
+  static Future<void> next(
     JobPayload payload,
     QueueDriver driver,
     JobRegistry jobs,
   ) async {
     List<Map<String, Object?>>? chain = payload.chain;
     if (chain != null && chain.isNotEmpty) {
-      try {
-        await _next(payload, chain, driver, jobs);
-      } catch (error, stack) {
-        QueueLog.danger(
-          'Queue: can not push the next job of the chain of '
-              '${payload.job} ${payload.id}: $error',
-          '$stack',
-        );
-      }
+      await _next(payload, chain, driver, jobs);
     }
+  }
+
+  /// The job of [payload] is done and deleted: count it as done in its
+  /// batch. An error here is logged: the job itself is done.
+  static Future<void> done(JobPayload payload, JobRegistry jobs) async {
     String? batch = payload.batch;
-    if (batch != null) await _count(payload, batch, jobs, pending: -1);
+    if (batch == null) return;
+    // a retried job that failed before: it is no longer failed
+    await _count(
+      payload,
+      batch,
+      jobs,
+      payload.batchFailed ? _BatchStep.retriedDone : _BatchStep.done,
+    );
   }
 
   /// The job of [payload] failed for good: run the catch job of its
   /// chain (the rest of the chain is dropped), and count it as failed
-  /// in its batch.
+  /// in its batch. A retried job that fails again is counted once.
   static Future<void> failed(
     JobPayload payload,
     JobRegistry jobs,
@@ -150,8 +154,8 @@ class JobBus {
       await Queue._callback(Queue._readItem(onError, jobs), error: error);
     }
     String? batch = payload.batch;
-    if (batch != null) {
-      await _count(payload, batch, jobs, failed: 1, error: error);
+    if (batch != null && !payload.batchFailed) {
+      await _count(payload, batch, jobs, _BatchStep.failed, error);
     }
   }
 
@@ -159,19 +163,12 @@ class JobBus {
   static Future<void> _count(
     JobPayload payload,
     String batch,
-    JobRegistry jobs, {
-    int pending = 0,
-    int failed = 0,
+    JobRegistry jobs,
+    _BatchStep step, [
     Object? error,
-  }) async {
+  ]) async {
     try {
-      await Batch._record(
-        batch,
-        jobs,
-        pending: pending,
-        failed: failed,
-        error: error,
-      );
+      await Batch._record(batch, jobs, step, error: error);
     } catch (error, stack) {
       QueueLog.danger(
         'Queue: can not count ${payload.job} ${payload.id} in its batch '
@@ -267,7 +264,13 @@ mixin Batchable on DoxJob {
 /// [Batchable] to them to read the batch, and [CatchesError] to the
 /// catch job to read the error.
 class PendingBatch {
-  PendingBatch(List<DoxJob> jobs) : jobs = List<DoxJob>.of(jobs);
+  /// Throws an [ArgumentError] when [jobs] is empty: an empty batch
+  /// would never finish.
+  PendingBatch(List<DoxJob> jobs) : jobs = List<DoxJob>.of(jobs) {
+    if (this.jobs.isEmpty) {
+      throw ArgumentError.value(jobs, 'jobs', 'needs at least one job');
+    }
+  }
 
   /// the jobs of the batch
   final List<DoxJob> jobs;
@@ -370,18 +373,27 @@ class PendingBatch {
       'catch': ?item(catchJob),
       'finally': ?item(completeJob),
     };
-    await Batch._db.execute(
-      'INSERT INTO ${Batch.table} (id, name, total_jobs, pending_jobs, '
-      'failed_jobs, options, created_at) VALUES (@id, @name, @total, '
-      '@total, 0, @options, @now)',
-      substitutionValues: <String, dynamic>{
-        'id': id,
-        'name': batchName,
-        'total': jobs.length,
-        'options': jsonEncode(options),
-        'now': QueueDriver.now(),
-      },
-    );
+    try {
+      await Batch._db.execute(
+        'INSERT INTO ${Batch.table} (id, name, total_jobs, pending_jobs, '
+        'failed_jobs, options, created_at) VALUES (@id, @name, @total, '
+        '@total, 0, @options, @now)',
+        substitutionValues: <String, dynamic>{
+          'id': id,
+          'name': batchName,
+          'total': jobs.length,
+          'options': jsonEncode(options),
+          'now': QueueDriver.now(),
+        },
+      );
+    } catch (error) {
+      throw StateError(
+        'Can not save the batch in the ${Batch.table} table. Make the '
+        'table with QueueTables.upBatches() in a migration (see the '
+        'dox_queue README), in the dox_orm connection of '
+        'QueueConfig.connection. The error: $error',
+      );
+    }
     await Queue._callback(beforeJob, batch: id);
     await Batch._push(id, jobs, payloads, connection, registry);
     return (await Queue.findBatch(id))!;
@@ -456,8 +468,10 @@ class Batch {
   }
 
   /// Add [jobs] to the batch and push them, eg. from a job of the batch.
-  /// They go on the queue and connection of the batch. With
-  /// `Queue.fake()` they are added to the faked batch.
+  /// They go on the queue and connection of the batch. Throws a
+  /// [StateError] when the batch is finished, cancelled or deleted:
+  /// then no job is pushed. With `Queue.fake()` they are added to the
+  /// faked batch.
   Future<void> add(List<DoxJob> jobs) async {
     PendingBatch? fake = _fake;
     if (fake != null) {
@@ -472,7 +486,18 @@ class Batch {
       _options['queue'] as String?,
       registry,
     );
-    await _change(id, total: jobs.length, pending: jobs.length);
+    Batch? open = await _change(
+      id,
+      total: jobs.length,
+      pending: jobs.length,
+      onlyOpen: true,
+    );
+    if (open == null) {
+      throw StateError(
+        'Can not add jobs to the batch $id: it is finished, cancelled or '
+        'deleted.',
+      );
+    }
     await _push(
       id,
       jobs,
@@ -501,7 +526,10 @@ class Batch {
 
   /// Push the [jobs] of the batch [id]. A [ShouldBeUnique] job that is
   /// skipped is taken out of the counts. The `sync` driver runs each
-  /// job now and counts it as done or failed.
+  /// job now and counts it as done or failed. When a push throws, the
+  /// jobs that were not pushed are taken out of the counts, the batch is
+  /// cancelled (so it is finished and can be pruned), and the error is
+  /// thrown again. No callback runs for them.
   static Future<void> _push(
     String id,
     List<DoxJob> jobs,
@@ -516,9 +544,18 @@ class Batch {
       JobPayload payload = payloads[i];
       _batchIds[job] = id;
       if (driver != null) {
-        if (!await Queue._send(job, payload.id, payload, driver, null)) {
-          await _record(id, registry, total: -1, pending: -1);
+        bool sent;
+        try {
+          sent = await Queue._send(job, payload.id, payload, driver, null);
+        } catch (_) {
+          // the jobs from here on are not pushed: take them out and
+          // cancel the batch, so it is finished and can be pruned
+          int left = jobs.length - i;
+          Batch? batch = await _change(id, total: -left, pending: -left);
+          await batch?.cancel();
+          rethrow;
         }
+        if (!sent) await _record(id, registry, _BatchStep.skipped);
         continue;
       }
       bool sent;
@@ -531,45 +568,52 @@ class Batch {
           null,
         );
       } catch (error) {
-        await _record(id, registry, failed: 1, error: error);
+        await _record(id, registry, _BatchStep.failed, error: error);
         continue;
       }
-      await _record(id, registry, total: sent ? 0 : -1, pending: -1);
+      await _record(id, registry, sent ? _BatchStep.done : _BatchStep.skipped);
     }
   }
 
-  /// Change the counts of the batch [id] by these numbers, then run the
-  /// callback jobs that are due. Each count change is one atomic step,
-  /// so only one worker sees a count reach its end.
+  /// Count a [step] of the batch [id], then run the callback jobs that
+  /// are due. Each count change is one atomic step, so only one worker
+  /// sees a count reach its end.
   static Future<void> _record(
     String id,
-    JobRegistry registry, {
-    int total = 0,
-    int pending = 0,
-    int failed = 0,
+    JobRegistry registry,
+    _BatchStep step, {
+    int count = 1,
     Object? error,
   }) async {
-    Batch? batch = await _change(
-      id,
-      total: total,
-      pending: pending,
-      failed: failed,
-    );
+    Batch? batch = await switch (step) {
+      _BatchStep.done => _change(id, pending: -1),
+      // the job failed before and was retried: it is not failed now
+      _BatchStep.retriedDone => _change(id, pending: -1, failed: -1),
+      _BatchStep.failed => _change(id, failed: 1),
+      _BatchStep.skipped => _change(id, total: -count, pending: -count),
+    };
     if (batch == null) return;
     Map<String, Object?> options = batch._options;
     bool allow = options['allowFailures'] == true;
-    if (failed > 0) {
-      if (batch.failedJobs == 1 && !allow) await batch.cancel();
-      if (allow) await _run(options['progress'], registry, id);
-      if (batch.failedJobs == 1) {
-        await _run(options['catch'], registry, id, error);
-      }
-    } else {
-      await _run(options['progress'], registry, id);
-      if (batch.pendingJobs == 0) await _run(options['then'], registry, id);
+    switch (step) {
+      case _BatchStep.failed:
+        if (batch.failedJobs == 1 && !allow) await batch.cancel();
+        if (allow) await _run(options['progress'], registry, id);
+        if (batch.failedJobs == 1) {
+          await _run(options['catch'], registry, id, error);
+        }
+      case _BatchStep.done:
+      case _BatchStep.retriedDone:
+        await _run(options['progress'], registry, id);
+        if (batch.pendingJobs == 0) await _run(options['then'], registry, id);
+      case _BatchStep.skipped:
+        // no job ran: no progress, but it can be the last open job
+        if (batch.pendingJobs == 0) await _run(options['then'], registry, id);
     }
-    // each change lowers pending minus failed by one: it hits 0 once
-    if (batch.pendingJobs == batch.failedJobs) {
+    // Every other step lowers pending minus failed, so it hits 0 once. A
+    // retried job that is done lowers both: it never ends the batch.
+    if (step != _BatchStep.retriedDone &&
+        batch.pendingJobs == batch.failedJobs) {
       await _db.execute(
         'UPDATE $table SET finished_at = @now WHERE id = @id AND '
         'finished_at IS NULL',
@@ -595,12 +639,14 @@ class Batch {
   }
 
   /// Add the numbers to the counts of the batch [id] and return the new
-  /// row, or null when there is no such batch.
+  /// row. Null when there is no such batch, or with [onlyOpen] when it
+  /// is finished or cancelled (then nothing changes).
   static Future<Batch?> _change(
     String id, {
     int total = 0,
     int pending = 0,
     int failed = 0,
+    bool onlyOpen = false,
   }) async {
     DBDriver db = _db;
     Map<String, dynamic> values = <String, dynamic>{
@@ -609,27 +655,36 @@ class Batch {
       'pending': pending,
       'failed': failed,
     };
+    String open = onlyOpen
+        ? ' AND finished_at IS NULL AND cancelled_at IS NULL'
+        : '';
     String update =
         'UPDATE $table SET total_jobs = total_jobs + @total, '
         'pending_jobs = pending_jobs + @pending, '
-        'failed_jobs = failed_jobs + @failed WHERE id = @id';
-    List<Map<String, dynamic>> rows;
-    if (db.getName() == Driver.mysql) {
-      // MySQL and MariaDB have no UPDATE ... RETURNING. The update locks
-      // the row until the commit, so the read sees only this change.
-      rows = await db.transaction(() async {
-        await db.execute(update, substitutionValues: values);
-        return db.query(
-          'SELECT * FROM $table WHERE id = @id',
-          substitutionValues: values,
-        );
-      });
-    } else {
+        'failed_jobs = failed_jobs + @failed WHERE id = @id$open';
+    if (db.getName() != Driver.mysql) {
       // one statement: SQLite runs one write at a time, Postgres locks
       // the row
-      rows = await db.query('$update RETURNING *', substitutionValues: values);
+      List<Map<String, dynamic>> rows = await db.query(
+        '$update RETURNING *',
+        substitutionValues: values,
+      );
+      return rows.isEmpty ? null : _fromRow(rows.first);
     }
-    return rows.isEmpty ? null : _fromRow(rows.first);
+    // MySQL and MariaDB have no UPDATE ... RETURNING. The update locks
+    // the row until the commit, so the read sees only this change.
+    List<Map<String, dynamic>> rows = await db.transaction(() async {
+      await db.execute(update, substitutionValues: values);
+      return db.query(
+        'SELECT * FROM $table WHERE id = @id',
+        substitutionValues: values,
+      );
+    });
+    if (rows.isEmpty) return null;
+    Batch batch = _fromRow(rows.first);
+    // a closed batch: the update did not match
+    if (onlyOpen && (batch.finished || batch.cancelled)) return null;
+    return batch;
   }
 
   static Batch _fromRow(Map<String, dynamic> row) {
@@ -665,4 +720,19 @@ class Batch {
     if (value is Map || value is List) return jsonEncode(value);
     return '$value';
   }
+}
+
+/// what happened to a job of a batch
+enum _BatchStep {
+  /// it is done
+  done,
+
+  /// it failed for good before, was retried, and is done now
+  retriedDone,
+
+  /// it failed for good
+  failed,
+
+  /// a skipped unique job: it was not pushed
+  skipped,
 }

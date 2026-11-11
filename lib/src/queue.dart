@@ -518,14 +518,22 @@ class Queue {
   }
 
   /// Delete the batches that finished (or were cancelled) before
-  /// [before]. Returns how many were deleted. The `prune-batches`
-  /// command of `bin/queue.dart` calls it.
-  static Future<int> pruneBatches(DateTime before) {
+  /// [before]. Opt-in [unfinishedBefore]: also delete the batches that
+  /// never finished and were made before it. Returns how many were
+  /// deleted. The `prune-batches` command of `bin/queue.dart` calls it.
+  static Future<int> pruneBatches(
+    DateTime before, {
+    DateTime? unfinishedBefore,
+  }) {
     DBDriver db = Batch._db;
     Map<String, dynamic> values = <String, dynamic>{
       'before': before.millisecondsSinceEpoch,
+      'unfinished': ?unfinishedBefore?.millisecondsSinceEpoch,
     };
-    String where = 'finished_at < @before';
+    String where = unfinishedBefore == null
+        ? 'finished_at < @before'
+        : '(finished_at < @before OR (finished_at IS NULL AND '
+              'created_at < @unfinished))';
     return db.transaction(() async {
       List<Map<String, dynamic>> rows = await db.query(
         'SELECT COUNT(*) AS total FROM ${Batch.table} WHERE $where',

@@ -32,7 +32,9 @@ import 'worker.dart';
 ///   jobs, so the process manager starts them with the new code.
 /// - `prune-failed`: delete failed jobs older than `--hours=N` (24).
 /// - `prune-batches`: delete the batches of `Queue.batch()` that
-///   finished more than `--hours=N` (24) ago.
+///   finished more than `--hours=N` (24) ago. Opt-in `--unfinished=N`:
+///   also delete the batches that never finished and were made more
+///   than N hours ago.
 ///
 /// SIGINT (Ctrl+C) and SIGTERM stop the worker gracefully: it takes no
 /// new job and waits for the running jobs. A second signal stops it at
@@ -68,7 +70,8 @@ Commands:
   restart           stop the running workers after their current jobs
   prune-failed      delete failed jobs older than --hours=N (default: 24)
   prune-batches     delete batches that finished more than --hours=N ago
-                    (default: 24)
+                    (default: 24). --unfinished=N also deletes batches that
+                    never finished, made more than N hours ago
 
 Flags of all commands:
   --connection=NAME   the queue connection of QueueConfig.connections
@@ -158,7 +161,13 @@ Flags of work:
         DateTime before = DateTime.now().subtract(
           Duration(hours: command.hours),
         );
-        int count = await Queue.pruneBatches(before);
+        int? unfinished = command.unfinished;
+        int count = await Queue.pruneBatches(
+          before,
+          unfinishedBefore: unfinished == null
+              ? null
+              : DateTime.now().subtract(Duration(hours: unfinished)),
+        );
         stdout.writeln('Deleted $count batches.');
         return 0;
     }
@@ -303,6 +312,7 @@ class QueueCommand {
     this.options, {
     this.hours = 24,
     this.connection,
+    this.unfinished,
   });
 
   /// `work`, `failed`, `retry`, `forget`, `flush`, `clear`, `restart`,
@@ -315,6 +325,9 @@ class QueueCommand {
 
   /// `--hours` of `prune-failed` and `prune-batches`
   final int hours;
+
+  /// `--unfinished` of `prune-batches`, in hours. Null: not given.
+  final int? unfinished;
 
   /// `--connection`: a name of `QueueConfig.connections`. Null: the
   /// main connection.
@@ -379,6 +392,7 @@ class QueueCommand {
       ),
       hours: _int(flags, 'hours') ?? 24,
       connection: _connection(flags['connection']),
+      unfinished: _int(flags, 'unfinished'),
     );
   }
 
@@ -422,6 +436,7 @@ class QueueCommand {
     'memory',
     'hours',
     'connection',
+    'unfinished',
   ];
 
   static String _trim(String value) => value.trim();

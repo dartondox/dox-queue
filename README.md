@@ -642,7 +642,8 @@ An error in the catch job is logged. For slow work, dispatch a new job from it.
 - `ShouldBeEncrypted` jobs stay encrypted inside the payload of the job before them.
 - A `ShouldBeUnique` job in the chain that is skipped (the same job is on the queue) stops the chain. The catch job runs with a `StateError`. When the first job is skipped, `dispatch()` returns `''` and nothing runs.
 - A next job that can not be read (eg. its class was removed) stops the chain. The catch job runs with the error.
-- A worker that crashes after a job is done, and before it pushed the next job, drops the rest of the chain.
+- The worker pushes the next job before it deletes the job that is done (like Laravel). When the push throws, the try counts as failed: the job is tried again (and runs again), and when no try is left it fails and the catch job runs. A worker that crashes between the push and the delete runs the job again, so the next job can run twice. Make jobs in a chain safe to run twice.
+- The unique lock of a `ShouldBeUnique` job is freed before the next job is pushed, so a next job with the same unique id is not skipped. A retry after a failed push runs without the lock.
 - The `sync` driver runs the jobs now, one after the other. When one throws, the catch job runs and `dispatch()` throws the error.
 - `Queue.fake()` keeps the chain in `chains`. Its jobs are not in `pushed`.
 
@@ -730,15 +731,18 @@ class ImportRows extends DoxJob with Batchable {
 
 - The first job that fails for good cancels the batch. Add `allowFailures()` to keep it going.
 - `cancel()` does not stop the jobs. They still run and count. A `Batchable` job reads `cancelled` to skip its work.
-- `add(jobs)` adds jobs, eg. from a job of the batch. They go on the queue and connection of the batch.
-- `pendingJobs` counts the failed jobs too, as they can be retried (like Laravel). When a retried job is done, it counts as done.
+- `add(jobs)` adds jobs, eg. from a job of the batch. They go on the queue and connection of the batch. It throws a `StateError` when the batch is finished, cancelled or deleted, and then pushes nothing.
+- `pendingJobs` counts the failed jobs too, as they can be retried (like Laravel). A failed job that you retry with `queue:retry` is marked in its payload. When it fails again, it is not counted again. When it is done, `pendingJobs` and `failedJobs` both go down by one. So `catchError` can run again when a later job fails.
+- An empty batch throws an `ArgumentError`: it would never finish.
+- Without the `job_batches` table, `dispatch()` throws a `StateError` that names `QueueTables.upBatches()`.
 - `finished` is true when every job ran (done or failed), or the batch was cancelled.
 - Each count is changed in one atomic step (`UPDATE ... RETURNING` on SQLite and Postgres, a transaction with a row lock on MySQL and MariaDB). So with many workers `then`, `catchError` and `whenComplete` still run once.
 
 ### Traps
 
-- A `ShouldBeUnique` job that is skipped (the same job is on the queue) is not counted in the batch.
-- A worker that crashes after a job is done, and before it counted it, leaves the batch with that job pending. Then `then` and `whenComplete` never run.
+- A `ShouldBeUnique` job that is skipped (the same job is on the queue) is taken out of `totalJobs` and `pendingJobs`. `progress` does not run for it. When it was the last open job, `then` and `whenComplete` run.
+- When a push throws in `dispatch()` or `add()`, the jobs that were not pushed are taken out of the counts, the batch is cancelled (so it is finished and can be pruned), and the error is thrown. No callback runs for those jobs. The jobs pushed before still run.
+- A worker that crashes after a job is done, and before it counted it, leaves the batch with that job pending. Then `then` and `whenComplete` never run. `prune-batches --unfinished=N` deletes such batches.
 - A chain inside a batch is not supported.
 - Batches do not use `afterCommit`: the batch is saved and its jobs are pushed at once.
 - The `sync` driver runs the jobs at `dispatch()`, one after the other, and counts them. A job that throws counts as failed: `dispatch()` does not throw. The table is still needed.
@@ -747,7 +751,7 @@ class ImportRows extends DoxJob with Batchable {
 
 ### Prune old batches
 
-`dart run bin/queue.dart prune-batches --hours=48` deletes the batches that finished (or were cancelled) more than 48 hours ago. The default is 24. `Queue.pruneBatches(before)` does the same in code.
+`dart run bin/queue.dart prune-batches --hours=48` deletes the batches that finished (or were cancelled) more than 48 hours ago. The default is 24. Opt-in `--unfinished=168` also deletes the batches that never finished and were made more than 168 hours ago. `Queue.pruneBatches(before, unfinishedBefore:)` does the same in code.
 
 ## Queue events
 

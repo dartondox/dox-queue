@@ -6,7 +6,8 @@ import 'fixtures/test_jobs.dart';
 import 'support.dart';
 
 /// logs [key]. [mode]: `ok`, `throw` (fails for good), `retry` (throws on
-/// the first try), `release` (releases on the first try) or `delete`
+/// the first try), `release` (releases on the first try), `delete` or
+/// `twice` (works, has 2 tries)
 class StepJob extends DoxJob with InteractsWithQueue {
   StepJob(this.key, [this.mode = 'ok']);
 
@@ -14,7 +15,8 @@ class StepJob extends DoxJob with InteractsWithQueue {
   final String mode;
 
   @override
-  int get tries => mode == 'retry' || mode == 'release' ? 2 : 1;
+  int get tries =>
+      mode == 'retry' || mode == 'release' || mode == 'twice' ? 2 : 1;
 
   @override
   Future<void> handle() async {
@@ -109,6 +111,22 @@ const JobCodec catchCodec = JobCodec(
   CatchJob.encode,
   CatchJob.decode,
 );
+
+/// a database driver whose next [fails] pushes throw
+class FailingPushDriver extends DatabaseQueueDriver {
+  FailingPushDriver(this.fails) : super(connection: 'sqlite');
+
+  int fails;
+
+  @override
+  Future<void> push(JobPayload payload, {Duration delay = Duration.zero}) {
+    if (fails > 0) {
+      fails--;
+      throw StateError('push is down');
+    }
+    return super.push(payload, delay: delay);
+  }
+}
 
 JobRegistry registry = JobRegistry(<JobCodec>[
   ...jobRegistry.codecs,
@@ -293,6 +311,55 @@ void main() {
       });
     }, skip: store.skip);
   }
+
+  group('chains on sqlite', () {
+    setUp(() async {
+      await testStores.first.reset();
+      Queue.configure(testStores.first.config(jobs: registry));
+    });
+
+    tearDown(Queue.close);
+
+    Future<void> workWith(QueueDriver driver) {
+      return Worker(
+        driver: driver,
+        jobs: registry,
+        options: const WorkerOptions(stopWhenEmpty: true),
+      ).run();
+    }
+
+    test('a failed push of the next job retries the job', () async {
+      await Queue.chain(<DoxJob>[StepJob('a', 'twice'), StepJob('b')])
+          .catchError(CatchJob('caught'))
+          .dispatch();
+      await workWith(FailingPushDriver(1));
+      // the job runs again, then the push works
+      expect(JobLog.handled, <String>['a', 'a', 'b']);
+      expect(JobLog.failed, isEmpty);
+    });
+
+    test(
+      'a push that keeps failing fails the job and runs the catch job',
+      () async {
+        await Queue.chain(<DoxJob>[StepJob('a'), StepJob('b')])
+            .catchError(CatchJob('caught'))
+            .dispatch();
+        await workWith(FailingPushDriver(1));
+        expect(JobLog.handled, <String>['a']);
+        expect(JobLog.failed.single, contains('push is down'));
+        expect(await Queue.driver.failed(), hasLength(1));
+      },
+    );
+
+    test('a unique next job of the same id is not skipped', () async {
+      await Queue.chain(<DoxJob>[UniqueStep('x'), UniqueStep('x')])
+          .catchError(CatchJob('caught'))
+          .dispatch();
+      await workWith(Queue.driver);
+      expect(JobLog.handled, <String>['unique x', 'unique x']);
+      expect(JobLog.failed, isEmpty);
+    });
+  });
 
   group('chains with the sync driver', () {
     setUp(() => Queue.configure(QueueConfig(jobs: registry)));
