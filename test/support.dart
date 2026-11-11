@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:dox_core/dox_core.dart' show AppConfig, Dox;
+import 'package:dox_core/utils/log_buffer.dart';
 import 'package:dox_orm/dox_orm.dart';
 import 'package:dox_queue/dox_queue.dart';
 
@@ -110,4 +112,22 @@ List<TestStore> testStores = <TestStore>[
 void setUpTestApp() {
   Dox().initialize(AppConfig(appKey: 'k' * 32, totalIsolate: 1));
   SqlQueryBuilder.initializeWithDatabaseConfig(testDatabaseConfig);
+}
+
+/// every line the Dox logger writes while [body] runs. The logger does
+/// not use `print`, so a print zone sees nothing. It writes through
+/// `LogBuffer.writer`, so catch the text there.
+Future<String> logOf(FutureOr<void> Function() body) async {
+  // older lines must not land in this log
+  LogBuffer.flush();
+  StringBuffer log = StringBuffer();
+  void Function(String) old = LogBuffer.writer;
+  LogBuffer.writer = log.write;
+  try {
+    await body();
+    LogBuffer.flush();
+  } finally {
+    LogBuffer.writer = old;
+  }
+  return log.toString();
 }
