@@ -7,7 +7,9 @@ import 'job_registry.dart';
 import 'job_run.dart';
 import 'queue.dart';
 import 'queue_driver.dart';
+import 'queue_event.dart';
 import 'queue_log.dart';
+import 'unique_lock.dart';
 
 /// Settings of a [Worker]. The flags of `bin/queue.dart work` set them.
 class WorkerOptions {
@@ -107,6 +109,7 @@ class Worker {
     Timer? timer = maxTime == null ? null : Timer(maxTime, _timeIsUp);
     await Future.wait(<Future<void>>[for (int i = 0; i < loops; i++) _loop()]);
     timer?.cancel();
+    await const QueueEvent(QueueEventType.stopping).fire();
   }
 
   void _timeIsUp() {
@@ -122,6 +125,7 @@ class Worker {
 
   Future<void> _loop() async {
     while (!_stopping) {
+      await const QueueEvent(QueueEventType.looping).fire();
       ReservedJob? job;
       try {
         job = await _next();
@@ -187,8 +191,18 @@ class Worker {
       // no retry: the job can not be read, a retry gives the same error
       QueueLog.danger('Queue: failed $label: $error');
       await driver.fail(reserved, '$error\n$stack');
+      await _freeUnique(payload);
+      await _event(
+        QueueEventType.failed,
+        reserved,
+        null,
+        error: error,
+        stack: stack,
+      );
       return;
     }
+    await _event(QueueEventType.processing, reserved, job);
+    if (job is ShouldBeUniqueUntilProcessing) await _freeUnique(payload);
     int tries = job.tries ?? options.tries;
     if (reserved.attempts > 1 &&
         _noTryLeft(job, payload, reserved.attempts - 1)) {
@@ -250,15 +264,66 @@ class Worker {
         'Queue: $label failed try ${reserved.attempts}$of, '
         'next try in $wait: $reason',
       );
+      await _event(
+        QueueEventType.exceptionOccurred,
+        next,
+        job,
+        error: reason,
+        stack: stack,
+      );
       await driver.release(next, wait);
+      await _event(QueueEventType.released, next, job, delay: wait);
       return;
     }
     if (jobRun.action != null) {
       await _apply(jobRun, reserved, job, label);
       return;
     }
-    await driver.delete(reserved);
+    await _finish(reserved, job);
     QueueLog.success('Queue: done $label in ${watch.elapsedMilliseconds}ms');
+  }
+
+  /// the job ended: delete it and free its unique lock
+  Future<void> _finish(ReservedJob reserved, DoxJob job) async {
+    await driver.delete(reserved);
+    await _releaseUnique(reserved, job);
+    await _event(QueueEventType.processed, reserved, job);
+  }
+
+  /// fire a queue event of [reserved]
+  Future<void> _event(
+    QueueEventType type,
+    ReservedJob reserved,
+    DoxJob? job, {
+    Object? error,
+    StackTrace? stack,
+    Duration? delay,
+  }) {
+    JobPayload payload = reserved.payload;
+    return QueueEvent(
+      type,
+      job: job,
+      name: payload.job,
+      id: payload.id,
+      queue: payload.queue,
+      attempts: reserved.attempts,
+      error: error,
+      stack: stack,
+      delay: delay,
+    ).fire();
+  }
+
+  /// free the lock of a [ShouldBeUnique] job, unless it was freed at the
+  /// start ([ShouldBeUniqueUntilProcessing])
+  Future<void> _releaseUnique(ReservedJob reserved, DoxJob job) async {
+    if (job is ShouldBeUniqueUntilProcessing) return;
+    await _freeUnique(reserved.payload);
+  }
+
+  /// free the unique lock saved in [payload], if it has one
+  static Future<void> _freeUnique(JobPayload payload) async {
+    String? name = payload.unique;
+    if (name != null) await releaseUniqueLock(name, payload.id);
   }
 
   /// do what the job asked for with `release()`, `fail()` or `delete()`
@@ -272,8 +337,14 @@ class Worker {
       case JobAction.release:
         QueueLog.info('Queue: $label released, next try in ${jobRun.delay}');
         await driver.release(reserved, jobRun.delay);
+        await _event(
+          QueueEventType.released,
+          reserved,
+          job,
+          delay: jobRun.delay,
+        );
       case JobAction.delete:
-        await driver.delete(reserved);
+        await _finish(reserved, job);
         QueueLog.info('Queue: $label deleted by the job');
       case JobAction.fail:
         await _fail(reserved, job, label, jobRun.error!, jobRun.stack!);
@@ -343,6 +414,7 @@ class Worker {
   ) async {
     QueueLog.danger('Queue: failed $label: $error');
     await driver.fail(reserved, '$error\n$stack');
+    await _releaseUnique(reserved, job);
     try {
       await job.failed(error, stack);
     } catch (hookError, hookStack) {
@@ -351,5 +423,12 @@ class Worker {
         '$hookStack',
       );
     }
+    await _event(
+      QueueEventType.failed,
+      reserved,
+      job,
+      error: error,
+      stack: stack,
+    );
   }
 }

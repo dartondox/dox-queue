@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'job_middleware.dart';
 import 'job_run.dart';
 import 'queue.dart';
 
@@ -100,7 +101,8 @@ abstract class DoxJob {
   FutureOr<void> failed(Object error, StackTrace stack) {}
 
   /// Put the job on the queue. A worker runs it later. Returns the job
-  /// id. With the `sync` driver it runs at once.
+  /// id. With the `sync` driver it runs at once. A [ShouldBeUnique] job
+  /// that is skipped returns an empty id (`''`).
   ///
   /// Wait with [delay], or until the time [delayUntil]. Not both.
   /// ```
@@ -217,6 +219,64 @@ abstract class DoxJob {
 /// with the same key, or one of `AppConfig.previousKeys`. The job name,
 /// queue and id stay plain text.
 mixin ShouldBeEncrypted on DoxJob {}
+
+/// Opt-in: run `handle()` through a list of [JobMiddleware], like the
+/// Laravel job `middleware()`. The first one runs first. The worker,
+/// the `sync` driver and `dispatchSync()` use them.
+/// ```
+/// @Job()
+/// class SendReport extends DoxJob with HasMiddleware {
+///   @override
+///   List<JobMiddleware> get middleware => <JobMiddleware>[
+///     RateLimited('reports', 10, Duration(minutes: 1)),
+///   ];
+///   ...
+/// }
+/// ```
+mixin HasMiddleware on DoxJob {
+  List<JobMiddleware> get middleware;
+}
+
+/// Opt-in: only one job with the same [uniqueId] can wait on the queue,
+/// like Laravel `ShouldBeUnique`. While one is waiting or running,
+/// `dispatch()` pushes nothing and returns an empty id (`''`).
+///
+/// The worker frees the lock when the job is done, deleted or failed for
+/// good. A release or a retry keeps it. The lock is in the default cache
+/// store of the app (`Cache()`), so the web app and the workers must use
+/// the same store (eg. `redis`). With `Queue.fake()` no cache is needed.
+/// ```
+/// @Job()
+/// class UpdateSearchIndex extends DoxJob with ShouldBeUnique {
+///   UpdateSearchIndex({required this.productId});
+///
+///   final int productId;
+///
+///   @override
+///   String get uniqueId => '$productId';
+///   ...
+/// }
+/// ```
+mixin ShouldBeUnique on DoxJob {
+  /// The key of the job, next to its name. Default: empty, so only one
+  /// job of the class at a time.
+  String get uniqueId => '';
+
+  /// The lock ends after this time, also when the job did not run.
+  /// Null: no end, the worker frees it.
+  Duration? get uniqueFor => null;
+}
+
+/// Opt-in: like [ShouldBeUnique], but the lock is freed when a worker
+/// starts the job, not when it ends. So a new job can be dispatched
+/// while this one runs. Like Laravel `ShouldBeUniqueUntilProcessing`.
+mixin ShouldBeUniqueUntilProcessing on DoxJob implements ShouldBeUnique {
+  @override
+  String get uniqueId => '';
+
+  @override
+  Duration? get uniqueFor => null;
+}
 
 /// Opt-in: lets a job control its own run inside `handle()`, like
 /// Laravel `InteractsWithQueue`: [attempts], [release], [fail] and

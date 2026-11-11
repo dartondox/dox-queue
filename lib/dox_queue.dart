@@ -7,14 +7,17 @@ export 'package:ioredis/ioredis.dart' show RedisOptions;
 export 'src/drivers/database_queue_driver.dart';
 export 'src/drivers/redis_queue_driver.dart';
 export 'src/job.dart';
+export 'src/job_middleware.dart';
 export 'src/job_registry.dart';
 export 'src/queue.dart';
 export 'src/queue_config.dart';
 export 'src/queue_driver.dart';
+export 'src/queue_event.dart';
 export 'src/queue_fake.dart';
 export 'src/queue_provider.dart';
 export 'src/queue_tables.dart';
 export 'src/queue_worker.dart';
+export 'src/schedule_jobs.dart';
 export 'src/send_queued_mail.dart'
     show RedactedMailError, SendEncryptedQueuedMail, SendQueuedMail;
 export 'src/worker.dart';

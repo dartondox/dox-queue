@@ -12,6 +12,7 @@ class JobPayload {
     this.attempts = 0,
     this.retryUntil,
     this.exceptions = 0,
+    this.unique,
   });
 
   /// a random id, like `0f3c...`
@@ -35,6 +36,11 @@ class JobPayload {
   /// how many tries threw an error, for `DoxJob.maxExceptions`
   final int exceptions;
 
+  /// The cache lock name of a `ShouldBeUnique` job, owned by [id]. The
+  /// worker and `clear` free the lock with it, also when the job class
+  /// can not be read. Null: not a unique job (also for older jobs).
+  final String? unique;
+
   /// a new random id: 16 random bytes as hex
   static String newId() {
     Random random = Random.secure();
@@ -55,6 +61,7 @@ class JobPayload {
       attempts: attempts,
       retryUntil: retryUntil,
       exceptions: exceptions,
+      unique: unique,
     );
   }
 
@@ -69,6 +76,7 @@ class JobPayload {
       queue: queue,
       data: data,
       retryUntil: retryUntil,
+      unique: unique,
     );
   }
 
@@ -82,11 +90,13 @@ class JobPayload {
       attempts: attempts,
       retryUntil: retryUntil,
       exceptions: exceptions,
+      unique: unique,
     );
   }
 
-  /// [retryUntil] and [exceptions] are left out when not set, so the
-  /// text of a job with neither is the same as before they existed
+  /// [retryUntil], [exceptions] and [unique] are left out when not set,
+  /// so the text of a job with none of them is the same as before they
+  /// existed
   String encode() {
     return jsonEncode(<String, Object?>{
       'id': id,
@@ -96,6 +106,7 @@ class JobPayload {
       'attempts': attempts,
       'retryUntil': ?retryUntil,
       if (exceptions > 0) 'exceptions': exceptions,
+      'unique': ?unique,
     });
   }
 
@@ -109,6 +120,7 @@ class JobPayload {
       attempts: (map['attempts'] as num? ?? 0).toInt(),
       retryUntil: (map['retryUntil'] as num?)?.toInt(),
       exceptions: (map['exceptions'] as num? ?? 0).toInt(),
+      unique: map['unique'] as String?,
     );
   }
 }

@@ -1,7 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:dox_core/dox_core.dart' show AppConfig, Dox;
+import 'package:dox_core/dox_core.dart'
+    show AppConfig, CacheConfig, CacheManager, Dox;
 import 'package:dox_core/utils/log_buffer.dart';
 import 'package:dox_orm/dox_orm.dart';
 import 'package:dox_queue/dox_queue.dart';
@@ -137,3 +138,31 @@ Future<String> logOf(FutureOr<void> Function() body) async {
   }
   return log.toString();
 }
+
+CacheManager? _testCache;
+
+/// An empty cache for `Cache()`: the Redis store when `REDIS_PORT` is
+/// set (shared, like between worker processes), else a memory store.
+Future<void> useTestCache() async {
+  String? port = env['REDIS_PORT'];
+  // a memory store does not flush its locks: make a new one
+  if (port == null) _testCache = null;
+  CacheManager cache = _testCache ??= CacheManager(
+    CacheConfig(
+      defaultStore: port == null ? 'memory' : 'redis',
+      stores: <String, Map<String, dynamic>>{
+        'memory': <String, dynamic>{'driver': 'memory'},
+        'redis': <String, dynamic>{
+          'driver': 'redis',
+          'port': int.parse(port ?? '6379'),
+          'prefix': 'dox_queue_test_cache:',
+        },
+      },
+    ),
+  );
+  Dox().cache = cache;
+  await cache.store().flush();
+}
+
+/// close the Redis store of [useTestCache]
+Future<void> closeTestCache() async => _testCache?.close();
