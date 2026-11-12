@@ -230,12 +230,18 @@ class Worker {
 
   /// The pop was given up after the grace, and then it returned a job.
   /// Nobody runs it, so put it back on the queue at once. The pop already
-  /// counted one attempt, and release keeps it (the same as a normal
-  /// release), so the job has one less try. This is the best we can do.
+  /// counted one attempt, but the job did not run. So it goes back with
+  /// one attempt less, and it runs normally later.
   /// The driver may be closed by now, so errors are ignored.
   Future<void> _giveBack(ReservedJob job) async {
+    int attempts = job.attempts - 1;
+    ReservedJob uncounted = ReservedJob(
+      job.payload.withAttempts(attempts),
+      attempts: attempts,
+      ref: job.ref,
+    );
     try {
-      await driver.release(job, Duration.zero);
+      await driver.release(uncounted, Duration.zero);
     } catch (_) {
       // the reservation of the driver ends by itself (retryAfter)
     }

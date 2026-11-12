@@ -43,6 +43,7 @@ class _SlowDriver implements QueueDriver {
       job: 'SendWelcomeEmail',
       queue: queue,
       data: '{"userId":5}',
+      attempts: 1,
     );
     return ReservedJob(payload, attempts: 1, ref: 1);
   }
@@ -59,6 +60,14 @@ class _SlowDriver implements QueueDriver {
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+/// wait until [done] is true, at most 3 seconds
+Future<void> _until(bool Function() done) async {
+  DateTime end = DateTime.now().add(const Duration(seconds: 3));
+  while (!done() && DateTime.now().isBefore(end)) {
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+  }
 }
 
 /// pop() returns null after a delay
@@ -141,7 +150,7 @@ void main() {
 
   test('a pop that returns a job after the grace gives it back', () async {
     JobLog.clear();
-    _SlowDriver driver = _SlowDriver(const Duration(milliseconds: 900));
+    _SlowDriver driver = _SlowDriver(const Duration(milliseconds: 500));
     Worker worker = Worker(
       driver: driver,
       jobs: jobRegistry,
@@ -152,8 +161,11 @@ void main() {
     worker.stop();
     await running.timeout(const Duration(seconds: 3));
     expect(driver.released, isEmpty);
-    await Future<void>.delayed(const Duration(milliseconds: 1000));
+    await _until(() => driver.released.isNotEmpty);
     expect(driver.released.length, 1);
+    // the pop counted attempt 1, the give back takes it back
+    expect(driver.released.single.attempts, 0);
+    expect(driver.released.single.payload.attempts, 0);
     expect(driver.released.single.payload.job, 'SendWelcomeEmail');
     expect(JobLog.handled, isEmpty);
     expect(driver.deleted, 0);
