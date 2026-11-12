@@ -146,14 +146,14 @@ class Queue {
   /// (`''`). With [afterCommit] inside a transaction the lock is taken at
   /// the commit, so the id is returned also for a job that is skipped then.
   ///
-  /// Opt-in [connection]: a name of [QueueConfig.connections], like
-  /// Laravel `onConnection()`. Null: the main connection.
+  /// Opt-in [connection]: a name of [QueueConfig.connections].
+  /// Null: the main connection.
   ///
   /// Opt-in [afterCommit]: inside a transaction of the default dox_orm
   /// connection, the job is pushed (or run, with `sync`) only after that
   /// transaction commits. A rollback drops it. Outside a transaction it
   /// is pushed at once. Null: [QueueConfig.afterCommit]. `false` wins
-  /// over the setting, like Laravel `beforeCommit()`. The job id is
+  /// over the setting. The job id is
   /// known at once, so it is returned at once.
   static Future<String> dispatch(
     DoxJob job, {
@@ -305,14 +305,13 @@ class Queue {
     QueueEvent.listen(QueueEventType.queued, listener);
   }
 
-  /// Listen to [QueueEventType.processing]: a worker starts a job, like
-  /// Laravel `Queue::before()`.
+  /// Listen to [QueueEventType.processing]: a worker starts a job.
   static void before(QueueListener listener) {
     QueueEvent.listen(QueueEventType.processing, listener);
   }
 
   /// Listen to [QueueEventType.processed]: a worker finished a job and
-  /// deleted it, like Laravel `Queue::after()`.
+  /// deleted it.
   static void after(QueueListener listener) {
     QueueEvent.listen(QueueEventType.processed, listener);
   }
@@ -324,25 +323,23 @@ class Queue {
   }
 
   /// Listen to [QueueEventType.exceptionOccurred]: `handle()` threw and
-  /// the job will be tried again, like Laravel `Queue::exceptionOccurred()`.
+  /// the job will be tried again.
   static void exceptionOccurred(QueueListener listener) {
     QueueEvent.listen(QueueEventType.exceptionOccurred, listener);
   }
 
-  /// Listen to [QueueEventType.failed]: a job failed for good, like
-  /// Laravel `Queue::failing()`.
+  /// Listen to [QueueEventType.failed]: a job failed for good.
   static void failing(QueueListener listener) {
     QueueEvent.listen(QueueEventType.failed, listener);
   }
 
   /// Listen to [QueueEventType.looping]: a worker loop is about to take
-  /// the next job, like Laravel `Queue::looping()`.
+  /// the next job.
   static void looping(QueueListener listener) {
     QueueEvent.listen(QueueEventType.looping, listener);
   }
 
-  /// Listen to [QueueEventType.stopping]: a worker stops, like Laravel
-  /// `Queue::stopping()`.
+  /// Listen to [QueueEventType.stopping]: a worker stops.
   static void stopping(QueueListener listener) {
     QueueEvent.listen(QueueEventType.stopping, listener);
   }
@@ -361,7 +358,7 @@ class Queue {
     return _config?.jobs.byType(job.runtimeType)?.name ?? '${job.runtimeType}';
   }
 
-  /// `uniqueFor`, with zero or less as no end (like Laravel 0)
+  /// `uniqueFor`, with zero or less as no end
   static Duration? _uniqueFor(ShouldBeUnique job) {
     Duration? time = job.uniqueFor;
     return time == null || time <= Duration.zero ? null : time;
@@ -484,7 +481,7 @@ class Queue {
     AfterResponse.run(() => _runNow(job));
   }
 
-  /// Opt-in: run [jobs] one after the other, like Laravel `Bus::chain()`.
+  /// Opt-in: run [jobs] one after the other.
   /// The next job is pushed only after the one before it is done. When
   /// one fails for good, the rest is dropped. See [PendingChain].
   /// ```
@@ -495,7 +492,7 @@ class Queue {
   /// ```
   static PendingChain chain(List<DoxJob> jobs) => PendingChain(jobs);
 
-  /// Opt-in: run [jobs] as one batch, like Laravel `Bus::batch()`. The
+  /// Opt-in: run [jobs] as one batch. The
   /// batch counts its done and failed jobs in the `job_batches` table.
   /// See [PendingBatch].
   /// ```

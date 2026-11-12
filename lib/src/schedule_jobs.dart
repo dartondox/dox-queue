@@ -2,7 +2,7 @@ import 'package:dox_scheduler/dox_scheduler.dart' show Schedule, ScheduledTask;
 
 import 'job.dart';
 
-/// Queue a job on a schedule, like Laravel `$schedule->job()`.
+/// Queue a job on a schedule.
 /// ```
 /// void schedule(Schedule s) {
 ///   s.job(SendReport()).dailyAt('08:00');

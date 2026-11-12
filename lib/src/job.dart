@@ -76,8 +76,7 @@ abstract class DoxJob {
   Duration? get timeout => null;
 
   /// Opt-in: retry the job until this time, not [tries] times. It is
-  /// read once, when the job is dispatched, and saved with the job. Like
-  /// Laravel `retryUntil`. After a failed try, the job fails when this
+  /// read once, when the job is dispatched, and saved with the job. After a failed try, the job fails when this
   /// time has passed, else it is tried again after its [backoff].
   /// ```
   /// @override
@@ -116,8 +115,8 @@ abstract class DoxJob {
   /// );
   /// ```
   ///
-  /// Opt-in [connection]: a name of `QueueConfig.connections`, like
-  /// Laravel `onConnection('redis')`. Null: the main connection.
+  /// Opt-in [connection]: a name of `QueueConfig.connections`.
+  /// Null: the main connection.
   ///
   /// Opt-in [afterCommit]: inside a dox_orm transaction, push the job
   /// only after it commits. See `Queue.dispatch`.
@@ -186,8 +185,8 @@ abstract class DoxJob {
     return Queue.dispatchSync(this);
   }
 
-  /// Run the job in this process after the response is sent, like
-  /// Laravel `dispatchAfterResponse`. The client does not wait for it.
+  /// Run the job in this process after the response is sent.
+  /// The client does not wait for it.
   /// The job does not go on the queue, so there is no job id, no retry
   /// and no worker. It is like [dispatchSync], only later.
   ///
@@ -209,7 +208,7 @@ abstract class DoxJob {
 }
 
 /// Opt-in: save the job data encrypted, so a person who can read Redis
-/// or the `jobs` table can not read it. Like Laravel `ShouldBeEncrypted`.
+/// or the `jobs` table can not read it.
 /// ```
 /// @Job()
 /// class ChargeCard extends DoxJob with ShouldBeEncrypted { ... }
@@ -220,8 +219,8 @@ abstract class DoxJob {
 /// queue and id stay plain text.
 mixin ShouldBeEncrypted on DoxJob {}
 
-/// Opt-in: run `handle()` through a list of [JobMiddleware], like the
-/// Laravel job `middleware()`. The first one runs first. The worker,
+/// Opt-in: run `handle()` through a list of [JobMiddleware].
+/// The first one runs first. The worker,
 /// the `sync` driver and `dispatchSync()` use them.
 /// ```
 /// @Job()
@@ -237,8 +236,8 @@ mixin HasMiddleware on DoxJob {
   List<JobMiddleware> get middleware;
 }
 
-/// Opt-in: only one job with the same [uniqueId] can wait on the queue,
-/// like Laravel `ShouldBeUnique`. While one is waiting or running,
+/// Opt-in: only one job with the same [uniqueId] can wait on the queue.
+/// While one is waiting or running,
 /// `dispatch()` pushes nothing and returns an empty id (`''`).
 ///
 /// The worker frees the lock when the job is done, deleted or failed for
@@ -269,7 +268,7 @@ mixin ShouldBeUnique on DoxJob {
 
 /// Opt-in: like [ShouldBeUnique], but the lock is freed when a worker
 /// starts the job, not when it ends. So a new job can be dispatched
-/// while this one runs. Like Laravel `ShouldBeUniqueUntilProcessing`.
+/// while this one runs.
 mixin ShouldBeUniqueUntilProcessing on DoxJob implements ShouldBeUnique {
   @override
   String get uniqueId => '';
@@ -278,8 +277,8 @@ mixin ShouldBeUniqueUntilProcessing on DoxJob implements ShouldBeUnique {
   Duration? get uniqueFor => null;
 }
 
-/// Opt-in: lets a job control its own run inside `handle()`, like
-/// Laravel `InteractsWithQueue`: [attempts], [release], [fail] and
+/// Opt-in: lets a job control its own run inside `handle()`:
+/// [attempts], [release], [fail] and
 /// [delete]. Jobs without it work as before.
 /// ```
 /// @Job()
