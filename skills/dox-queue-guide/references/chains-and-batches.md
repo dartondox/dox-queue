@@ -97,4 +97,13 @@ await Queue.batch(<DoxJob>[ImportUsers()])
 - The chain counts as one job of the batch. It is done when its last job is done.
 - When a job of the chain fails for good, the rest of the chain is dropped and the batch counts one failed job. `allowFailures()` and `catchError()` work as for any job.
 - `add(jobs)` takes jobs only, not chains.
+
+### Batch events
+
+```dart
+Queue.batchProgress((QueueEvent event) => print('${event.batch!.progress}%'));
+Queue.batchFailed((QueueEvent event) => alert(event.batch!.id, event.error));
+```
+
+Also `Queue.batchDispatched`, `Queue.batchCancelled` and `Queue.batchFinished`. Each fires once. A failure without `allowFailures()` fires `batchFailed`, then `batchCancelled`.
 - Test: `queue.assertBatchedChain([ImportOrders, SumOrders])`.

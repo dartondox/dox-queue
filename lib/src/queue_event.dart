@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'job.dart';
+import 'queue.dart' show Batch;
 import 'queue_log.dart';
 
 /// What happened, see [QueueEvent].
@@ -28,6 +29,28 @@ enum QueueEventType {
 
   /// a worker stops
   stopping,
+
+  /// `Queue.batch(...).dispatch()` saved a batch, before its jobs are
+  /// pushed. Fires in the process that dispatched it.
+  batchDispatched,
+
+  /// A job (or a chain) of a batch is done, or, with `allowFailures()`,
+  /// failed for good. Fires in the process that counted it: the worker,
+  /// or the dispatcher with the `sync` driver.
+  batchProgress,
+
+  /// Every job of a batch ran (done or failed). Fires once, in the
+  /// process that counted the last job.
+  batchFinished,
+
+  /// The first job of a batch failed for good. Fires once, in the
+  /// process that counted it. [QueueEvent.error] is its error.
+  batchFailed,
+
+  /// A batch was cancelled: `Batch.cancel()`, the first failure without
+  /// `allowFailures()`, or a push that threw. Fires once, in the process
+  /// that cancelled it.
+  batchCancelled,
 }
 
 /// A listener of queue events. It may return a Future: the queue waits
@@ -47,12 +70,14 @@ class QueueEvent {
     this.error,
     this.stack,
     this.delay,
+    this.batch,
   });
 
   final QueueEventType type;
 
-  /// The job. Null for [QueueEventType.looping] and
-  /// [QueueEventType.stopping], and when a worker can not read the job.
+  /// The job. Null for [QueueEventType.looping],
+  /// [QueueEventType.stopping] and the batch events, and when a worker
+  /// can not read the job.
   final DoxJob? job;
 
   /// the job name of the registry
@@ -71,6 +96,10 @@ class QueueEvent {
 
   /// the wait of `queued` and `released`
   final Duration? delay;
+
+  /// The batch of a `batch...` event, as it was after the step: its
+  /// `id`, `name` and counts. Null for the job events.
+  final Batch? batch;
 
   static final Map<QueueEventType, List<QueueListener>> _listeners =
       <QueueEventType, List<QueueListener>>{};

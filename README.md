@@ -765,7 +765,7 @@ await Queue.batch(<DoxJob>[ImportUsers()])
 - Batches do not use `afterCommit`: the batch is saved and its jobs are pushed at once.
 - The `sync` driver runs the jobs at `dispatch()`, one after the other, and counts them. A job that throws counts as failed: `dispatch()` does not throw. The table is still needed.
 - `Queue.fake()` keeps the batch in `batches`, and saves and runs nothing. Its jobs are not in `pushed`. `add()` adds to the faked batch, `cancel()` does nothing, and `Queue.findBatch()` gives null.
-- The queue events fire for the jobs of a batch like for any job. There are no batch events.
+- The queue events fire for the jobs of a batch like for any job. The batch has its own events, see [Batch events](#batch-events).
 
 ### Prune old batches
 
@@ -796,6 +796,31 @@ Queue.failing((QueueEvent event) => alert(event.name, event.error));
 - A listener that throws is logged. It never stops the worker.
 - The `sync` driver, `dispatchSync()`, `dispatchAfterResponse()` and `Queue.fake()` fire no events.
 - `Queue.forgetListeners()` removes them all (eg. in tests).
+
+### Batch events
+
+Opt-in hooks for the steps of a batch. `event.batch` is the batch after the step (`id`, `name` and the counts):
+
+```dart
+Queue.batchProgress((QueueEvent event) {
+  Batch batch = event.batch!;
+  print('${batch.name}: ${batch.progress}%');
+});
+Queue.batchFailed((QueueEvent event) => alert(event.batch!.id, event.error));
+```
+
+| Hook | When | Where it fires |
+| --- | --- | --- |
+| `Queue.batchDispatched` | the batch was saved, before its jobs are pushed | the process that called `dispatch()` |
+| `Queue.batchProgress` | a job (or a chain) of the batch is done. With `allowFailures()`, also when one failed | the worker that counted it |
+| `Queue.batchFailed` | the first job failed for good. `event.error` is its error | the worker that counted it |
+| `Queue.batchCancelled` | the batch was cancelled: `cancel()`, the first failure without `allowFailures()`, or a push that threw | the process that cancelled it |
+| `Queue.batchFinished` | every job ran (done or failed) | the worker that counted the last job |
+
+- Each event fires once per step, also with many workers.
+- The order of one failure without `allowFailures()`: `batchFailed`, then `batchCancelled`.
+- With the `sync` driver every event fires in the process that called `dispatch()`.
+- `Queue.fake()` fires no batch events.
 
 ## Schedule a job
 

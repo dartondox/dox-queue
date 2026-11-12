@@ -120,6 +120,30 @@ PendingBatch batchOf(List<DoxJob> jobs) {
 
 final Set<String> _made = <String>{};
 
+/// the batch events that fired, as `<type> <done>/<total> f<failed>`,
+/// with ` finished`, ` cancelled` and the error when set
+List<String> events = <String>[];
+
+void logEvent(QueueEvent event) {
+  Batch batch = event.batch!;
+  events.add(
+    '${event.type.name} ${batch.name} '
+    '${batch.processedJobs}/${batch.totalJobs} f${batch.failedJobs}'
+    '${batch.finished ? ' finished' : ''}'
+    '${batch.cancelled ? ' cancelled' : ''}'
+    '${event.error == null ? '' : ' ${event.error}'}',
+  );
+}
+
+/// listen to every batch event with [logEvent]
+void listenToBatches() {
+  Queue.batchDispatched(logEvent);
+  Queue.batchProgress(logEvent);
+  Queue.batchFinished(logEvent);
+  Queue.batchFailed(logEvent);
+  Queue.batchCancelled(logEvent);
+}
+
 /// make and empty the job_batches table of the dox_orm connection [name]
 /// (null: the default connection)
 Future<void> resetBatches(String? name) async {
@@ -137,8 +161,11 @@ void main() {
   setUp(() async {
     JobLog.clear();
     calls.clear();
+    events.clear();
+    listenToBatches();
     await useTestCache();
   });
+  tearDown(Queue.forgetListeners);
   tearDownAll(closeTestCache);
 
   for (TestStore store in testStores) {
@@ -459,6 +486,63 @@ void main() {
         ]);
       });
 
+      test('fires the batch events in order', () async {
+        await Queue.batch(<DoxJob>[BatchStep('a')])
+            .chain(<DoxJob>[BatchStep('b'), BatchStep('c')])
+            .name('ev')
+            .dispatch();
+        expect(events, <String>['batchDispatched ev 0/2 f0']);
+        await work();
+        expect(events, <String>[
+          'batchDispatched ev 0/2 f0',
+          'batchProgress ev 1/2 f0',
+          'batchProgress ev 2/2 f0',
+          'batchFinished ev 2/2 f0 finished',
+        ]);
+      });
+
+      test('fires failed, then cancelled, once', () async {
+        await Queue.batch(<DoxJob>[
+          BatchStep('a'),
+          BatchStep('b', 'throw'),
+          BatchStep('c', 'throw'),
+        ]).name('ev').dispatch();
+        await work();
+        expect(events, <String>[
+          'batchDispatched ev 0/3 f0',
+          'batchProgress ev 1/3 f0',
+          'batchFailed ev 1/3 f1 Bad state: b broken',
+          'batchCancelled ev 1/3 f1 finished cancelled',
+          'batchFinished ev 1/3 f2 finished cancelled',
+        ]);
+      });
+
+      test('allowFailures fires progress for a failed job', () async {
+        await Queue.batch(<DoxJob>[BatchStep('a', 'throw')])
+            .name('ev')
+            .allowFailures()
+            .dispatch();
+        await work();
+        expect(events, <String>[
+          'batchDispatched ev 0/1 f0',
+          'batchFailed ev 0/1 f1 Bad state: a broken',
+          'batchProgress ev 0/1 f1',
+          'batchFinished ev 0/1 f1 finished',
+        ]);
+      });
+
+      test('cancel() fires cancelled once', () async {
+        Batch batch = await Queue.batch(<DoxJob>[BatchStep('a')])
+            .name('ev')
+            .dispatch();
+        await batch.cancel();
+        await batch.cancel();
+        expect(events, <String>[
+          'batchDispatched ev 0/1 f0',
+          'batchCancelled ev 0/1 f0 finished cancelled',
+        ]);
+      });
+
       test('the jobs carry the batch id, a plain job does not', () async {
         Batch batch = await Queue.batch(<DoxJob>[BatchStep('a')]).dispatch();
         await SendWelcomeEmail(userId: 1).dispatch();
@@ -593,6 +677,15 @@ void main() {
       ]);
     });
 
+    test('fires the events in the dispatcher', () async {
+      await Queue.batch(<DoxJob>[BatchStep('a')]).name('ev').dispatch();
+      expect(events, <String>[
+        'batchDispatched ev 0/1 f0',
+        'batchProgress ev 1/1 f0',
+        'batchFinished ev 1/1 f0 finished',
+      ]);
+    });
+
     test('a chain runs now, in order, and counts once', () async {
       Batch batch = await batchOf(<DoxJob>[BatchStep('a')])
           .chain(<DoxJob>[BatchStep('b'), BatchStep('c')])
@@ -641,6 +734,7 @@ void main() {
       fake.assertBatchCount(1);
       fake.assertNothingPushed();
       expect(JobLog.handled, isEmpty);
+      expect(events, isEmpty);
       expect(await Queue.findBatch(batch.id), isNull);
       expect(
         () => fake.assertBatched((PendingBatch batch) => false),

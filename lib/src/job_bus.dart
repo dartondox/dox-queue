@@ -420,6 +420,7 @@ class PendingBatch {
       'catch': ?item(catchJob),
       'finally': ?item(completeJob),
     };
+    int now = QueueDriver.now();
     try {
       await Batch._db.execute(
         'INSERT INTO ${Batch.table} (id, name, total_jobs, pending_jobs, '
@@ -430,7 +431,7 @@ class PendingBatch {
           'name': batchName,
           'total': units.length,
           'options': jsonEncode(options),
-          'now': QueueDriver.now(),
+          'now': now,
         },
       );
     } catch (error) {
@@ -441,6 +442,21 @@ class PendingBatch {
         'QueueConfig.connection. The error: $error',
       );
     }
+    await QueueEvent(
+      QueueEventType.batchDispatched,
+      batch: Batch._(
+        id,
+        batchName,
+        units.length,
+        units.length,
+        0,
+        DateTime.fromMillisecondsSinceEpoch(now),
+        null,
+        null,
+        options,
+        null,
+      ),
+    ).fire();
     await Queue._callback(beforeJob, batch: id);
     await Batch._push(id, units, payloads, queue, connection, registry);
     return (await Queue.findBatch(id))!;
@@ -507,11 +523,41 @@ class Batch {
   /// `cancelled` to skip its work. Does nothing with `Queue.fake()`.
   Future<void> cancel() async {
     if (_fake != null) return;
-    await _db.execute(
-      'UPDATE $table SET cancelled_at = @now, finished_at = '
-      'COALESCE(finished_at, @now) WHERE id = @id AND cancelled_at IS NULL',
-      substitutionValues: <String, dynamic>{'id': id, 'now': QueueDriver.now()},
-    );
+    Batch? cancelled = await _cancel(id);
+    if (cancelled == null) return;
+    await QueueEvent(QueueEventType.batchCancelled, batch: cancelled).fire();
+  }
+
+  /// Cancel the batch [id] and return the new row. Null when it was
+  /// cancelled before, or is gone: then nothing changes.
+  static Future<Batch?> _cancel(String id) async {
+    DBDriver db = _db;
+    Map<String, dynamic> values = <String, dynamic>{
+      'id': id,
+      'now': QueueDriver.now(),
+    };
+    String update =
+        'UPDATE $table SET cancelled_at = @now, finished_at = '
+        'COALESCE(finished_at, @now) WHERE id = @id AND cancelled_at IS NULL';
+    if (db.getName() != Driver.mysql) {
+      List<Map<String, dynamic>> rows = await db.query(
+        '$update RETURNING *',
+        substitutionValues: values,
+      );
+      return rows.isEmpty ? null : _fromRow(rows.first);
+    }
+    // MySQL and MariaDB: lock the row, so only one call cancels it
+    return db.transaction(() async {
+      String select = 'SELECT * FROM $table WHERE id = @id';
+      List<Map<String, dynamic>> rows = await db.query(
+        '$select FOR UPDATE',
+        substitutionValues: values,
+      );
+      if (rows.isEmpty || rows.first['cancelled_at'] != null) return null;
+      await db.execute(update, substitutionValues: values);
+      rows = await db.query(select, substitutionValues: values);
+      return _fromRow(rows.first);
+    });
   }
 
   /// Add [jobs] to the batch and push them, eg. from a job of the batch.
@@ -692,32 +738,69 @@ class Batch {
         step != _BatchStep.retriedDone && batch.pendingJobs == batch.failedJobs;
     // mark it finished before any callback runs, so an add() from
     // another process (or from a callback) is refused from now on
+    int now = QueueDriver.now();
     if (ends) {
       await _db.execute(
         'UPDATE $table SET finished_at = @now WHERE id = @id AND '
         'finished_at IS NULL',
-        substitutionValues: <String, dynamic>{
-          'id': id,
-          'now': QueueDriver.now(),
-        },
+        substitutionValues: <String, dynamic>{'id': id, 'now': now},
       );
     }
     switch (step) {
       case _BatchStep.failed:
+        if (batch.failedJobs == 1) {
+          await QueueEvent(
+            QueueEventType.batchFailed,
+            batch: batch,
+            error: error,
+          ).fire();
+        }
         if (batch.failedJobs == 1 && !allow) await batch.cancel();
-        if (allow) await _run(options['progress'], registry, id);
+        if (allow) await _progress(batch, options['progress'], registry);
         if (batch.failedJobs == 1) {
           await _run(options['catch'], registry, id, error);
         }
       case _BatchStep.done:
       case _BatchStep.retriedDone:
-        await _run(options['progress'], registry, id);
+        await _progress(batch, options['progress'], registry);
         if (batch.pendingJobs == 0) await _run(options['then'], registry, id);
       case _BatchStep.skipped:
         // no job ran: no progress, but it can be the last open job
         if (batch.pendingJobs == 0) await _run(options['then'], registry, id);
     }
-    if (ends) await _run(options['finally'], registry, id);
+    if (ends) {
+      await QueueEvent(
+        QueueEventType.batchFinished,
+        batch: batch._finished(DateTime.fromMillisecondsSinceEpoch(now)),
+      ).fire();
+      await _run(options['finally'], registry, id);
+    }
+  }
+
+  /// fire the progress event of [batch], then run its progress job
+  static Future<void> _progress(
+    Batch batch,
+    Object? item,
+    JobRegistry registry,
+  ) async {
+    await QueueEvent(QueueEventType.batchProgress, batch: batch).fire();
+    await _run(item, registry, batch.id);
+  }
+
+  /// this batch, finished at [time] (or at its old finish time)
+  Batch _finished(DateTime time) {
+    return Batch._(
+      id,
+      name,
+      totalJobs,
+      pendingJobs,
+      failedJobs,
+      createdAt,
+      cancelledAt,
+      finishedAt ?? time,
+      _options,
+      _fake,
+    );
   }
 
   /// run the callback job [item] of the batch [id]

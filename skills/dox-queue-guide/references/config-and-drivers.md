@@ -66,3 +66,11 @@ An entry uses only `driver`, `redis`, `prefix`, `connection`, `retryAfter` and `
 ## Queue events
 
 `Queue.queued`, `Queue.before`, `Queue.after`, `Queue.released`, `Queue.exceptionOccurred`, `Queue.failing`, `Queue.looping`, `Queue.stopping` take a listener `(QueueEvent event)`. Listeners are per isolate: add them in a provider. The sync driver and `Queue.fake()` fire no events.
+
+Batch events take the same listener. `event.batch` is the batch after the step:
+
+```dart
+Queue.batchFinished((QueueEvent event) => print('${event.batch!.name} done'));
+```
+
+`Queue.batchDispatched` (dispatcher), `Queue.batchProgress`, `Queue.batchFailed` (has `event.error`), `Queue.batchCancelled`, `Queue.batchFinished` (worker). With the sync driver all fire in the dispatcher. `Queue.fake()` fires none.
