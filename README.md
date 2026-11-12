@@ -565,7 +565,7 @@ Things to know:
 
 - They keep their counts and locks in the default cache store (`Cache()`). All workers must use the same store: `redis`, or `file` on one machine. A `memory` store is per process.
 - A release counts as a try. Give these jobs more `tries`, or a `retryUntil`.
-- `WithoutOverlapping` does not add the class name to the lock, unlike Laravel. Job classes with the same key share it.
+- `WithoutOverlapping` does not add the class name to the lock. Job classes with the same key share it.
 - With `dispatchSync()`, `dispatchAfterResponse()` and the `sync` driver there is no queue. A middleware that releases the job (eg. `RateLimited` over its limit) skips `handle()`, and a warning is logged.
 
 ## Unique jobs
@@ -599,7 +599,7 @@ class UpdateSearchIndex extends DoxJob with ShouldBeUnique {
 
 ## Job chains
 
-Run jobs one after the other, like Laravel `Bus::chain()`. The next job is pushed only when the job before it is done.
+Run jobs one after the other. The next job is pushed only when the job before it is done.
 
 ```dart
 await Queue.chain(<DoxJob>[
@@ -642,7 +642,7 @@ An error in the catch job is logged. For slow work, dispatch a new job from it.
 - `ShouldBeEncrypted` jobs stay encrypted inside the payload of the job before them.
 - A `ShouldBeUnique` job in the chain that is skipped (the same job is on the queue) stops the chain. The catch job runs with a `StateError`. When the first job is skipped, `dispatch()` returns `''` and nothing runs.
 - A next job that can not be read (eg. its class was removed) stops the chain. The catch job runs with the error.
-- The worker pushes the next job before it deletes the job that is done (like Laravel). When the push throws, the try counts as failed: the job is tried again (and runs again), and when no try is left it fails and the catch job runs. A worker that crashes between the push and the delete runs the job again, so the next job can run twice. Make jobs in a chain safe to run twice.
+- The worker pushes the next job before it deletes the job that is done. When the push throws, the try counts as failed: the job is tried again (and runs again), and when no try is left it fails and the catch job runs. A worker that crashes between the push and the delete runs the job again, so the next job can run twice. Make jobs in a chain safe to run twice.
 - A failed push counts against the job even though its `handle()` worked: it gets an `exceptionOccurred` event and is released, and at the last try its `failed()` hook and the `failed` event run. With the default `tries` of 1 the first failed push does that, so give chain jobs more than one try.
 - The unique lock of a `ShouldBeUnique` job is freed before the next job is pushed, so a next job with the same unique id is not skipped. A retry after a failed push runs without the lock.
 - The `sync` driver runs the jobs now, one after the other. When one throws, the catch job runs and `dispatch()` throws the error.
@@ -650,7 +650,7 @@ An error in the catch job is logged. For slow work, dispatch a new job from it.
 
 ## Job batches
 
-Run many jobs as one batch, like Laravel `Bus::batch()`, and act when they are all done:
+Run many jobs as one batch, and act when they are all done:
 
 ```dart
 Batch batch = await Queue.batch(<DoxJob>[
@@ -673,7 +673,7 @@ print(batch.id);
 | `progress(job)` | each time a job is done (with `allowFailures()`, also when one fails) |
 | `then(job)` | once, when every job is done |
 | `catchError(job)` | once, when the first job fails for good |
-| `whenComplete(job)` | once, when every job ran (done or failed), like Laravel `finally` |
+| `whenComplete(job)` | once, when every job ran (done or failed) |
 
 A function can not be saved in the queue, so each callback is a job of a class in `jobRegistry`. It runs once, in the process where the step happened (the worker, or the app for `before`), like `dispatchSync()`: no queue, no retry. An error in it is logged. For slow work, dispatch a new job from it. Add `Batchable` to read the batch, and `CatchesError` to read the error:
 
@@ -733,7 +733,7 @@ class ImportRows extends DoxJob with Batchable {
 - The first job that fails for good cancels the batch. Add `allowFailures()` to keep it going.
 - `cancel()` does not stop the jobs. They still run and count. A `Batchable` job reads `cancelled` to skip its work.
 - `add(jobs)` adds jobs, eg. from a job of the batch. They go on the queue and connection of the batch. It throws a `StateError` when the batch is finished, cancelled or deleted, and then pushes nothing.
-- `pendingJobs` counts the failed jobs too, as they can be retried (like Laravel). A failed job that you retry with `queue:retry` is marked in its payload. When it fails again, it is not counted again. When it is done, `pendingJobs` and `failedJobs` both go down by one. So `catchError` can run again when a later job fails.
+- `pendingJobs` counts the failed jobs too, as they can be retried. A failed job that you retry with `queue:retry` is marked in its payload. When it fails again, it is not counted again. When it is done, `pendingJobs` and `failedJobs` both go down by one. So `catchError` can run again when a later job fails.
 - An empty batch throws an `ArgumentError`: it would never finish.
 - Without the `job_batches` table, `dispatch()` throws a `StateError` that names `QueueTables.upBatches()`.
 - `finished` is true when every job ran (done or failed), or the batch was cancelled.
@@ -758,7 +758,7 @@ class ImportRows extends DoxJob with Batchable {
 
 ## Queue events
 
-Listen to the steps of a job, like Laravel `Queue::before()`:
+Listen to the steps of a job:
 
 ```dart
 Queue.before((QueueEvent event) => print('start ${event.name} ${event.id}'));
@@ -827,7 +827,7 @@ Use another connection of `config/database.dart` with `QueueConfig(connection: '
 `failed_jobs.failed_at` is the time the job failed. It has one of two types:
 
 - A big integer: unix time in milliseconds. This is the default.
-- A timestamp in UTC, like Laravel. Turn it on with `failedAtTimestamp: true`.
+- A timestamp in UTC. Turn it on with `failedAtTimestamp: true`.
 
 `FailedJob.failedAt` is the same `DateTime` with both types.
 
