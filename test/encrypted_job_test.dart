@@ -95,7 +95,7 @@ void main() {
     String oldKey = 'k' * 32;
     String newKey = 'n' * 32;
 
-    tearDown(setUpTestApp);
+    tearDown(setUpTestKey);
 
     test('data made with an old key is read with previousKeys', () {
       String data = Queue.encryptData('{"card":"x"}', 'ChargeCard');

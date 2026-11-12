@@ -115,9 +115,16 @@ List<TestStore> testStores = <TestStore>[
   TestStore('redis', skip: env['REDIS_PORT'] == null ? 'no REDIS_PORT' : null),
 ];
 
+/// reset only the Dox app key and config. It does not touch the database.
+/// Use it in `setUp` and `tearDown`. Do not call `setUpTestApp` there: it
+/// makes a new empty database, and `TestStore` would still think the tables exist.
+void setUpTestKey() {
+  Dox().initialize(AppConfig(appKey: 'k' * 32, totalIsolate: 1));
+}
+
 /// set up Dox (for the logger) and the ORM once per test file
 void setUpTestApp() {
-  Dox().initialize(AppConfig(appKey: 'k' * 32, totalIsolate: 1));
+  setUpTestKey();
   SqlQueryBuilder.initializeWithDatabaseConfig(testDatabaseConfig);
 }
 

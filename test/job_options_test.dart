@@ -155,7 +155,7 @@ void main() {
       );
     });
 
-    tearDown(setUpTestApp);
+    tearDown(setUpTestKey);
 
     test('retryUntilOf reads retryUntil from the job class now', () {
       int before = DateTime.now().millisecondsSinceEpoch;
