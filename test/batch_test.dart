@@ -395,6 +395,70 @@ void main() {
         expect(now?.totalJobs, 1);
       });
 
+      test('a chain in a batch counts as one job', () async {
+        Batch batch = await batchOf(<DoxJob>[BatchStep('a')])
+            .chain(<DoxJob>[BatchStep('b'), BatchStep('c', 'retry')])
+            .dispatch();
+        expect(batch.totalJobs, 2);
+        expect(batch.pendingJobs, 2);
+        await work();
+        Batch? done = await Queue.findBatch(batch.id);
+        expect(JobLog.handled, <String>['a', 'b', 'c', 'c']);
+        expect(done?.totalJobs, 2);
+        expect(done?.pendingJobs, 0);
+        expect(done?.failedJobs, 0);
+        expect(done?.finished, isTrue);
+        expect(calls, <String>[
+          'before',
+          'progress',
+          'progress',
+          'then',
+          'finally',
+        ]);
+      });
+
+      test('a chain in a batch is done after its last job', () async {
+        Batch batch = await Queue.batch(<DoxJob>[BatchStep('a')])
+            .chain(<DoxJob>[BatchStep('b'), BatchStep('c')])
+            .dispatch();
+        Worker one = Worker(
+          driver: Queue.driver,
+          jobs: registry,
+          options: const WorkerOptions(once: true),
+        );
+        await one.run(); // a
+        await one.run(); // b, pushes c
+        Batch? now = await Queue.findBatch(batch.id);
+        expect(now?.pendingJobs, 1);
+        expect(now?.processedJobs, 1);
+        ReservedJob? c = await Queue.driver.pop('default');
+        expect(c?.payload.batch, batch.id);
+        await one.process(c!);
+        now = await Queue.findBatch(batch.id);
+        expect(now?.pendingJobs, 0);
+        expect(now?.finished, isTrue);
+      });
+
+      test('a failed job of a chain fails the batch once', () async {
+        Batch batch = await batchOf(<DoxJob>[BatchStep('a')])
+            .chain(<DoxJob>[BatchStep('b', 'throw'), BatchStep('c')])
+            .dispatch();
+        await work();
+        Batch? done = await Queue.findBatch(batch.id);
+        // the rest of the chain is dropped
+        expect(JobLog.handled, <String>['a', 'b']);
+        expect(done?.failedJobs, 1);
+        expect(done?.pendingJobs, 1);
+        expect(done?.cancelled, isTrue);
+        expect(done?.finished, isTrue);
+        expect(calls, <String>[
+          'before',
+          'progress',
+          'catch: Bad state: b broken',
+          'finally',
+        ]);
+      });
+
       test('the jobs carry the batch id, a plain job does not', () async {
         Batch batch = await Queue.batch(<DoxJob>[BatchStep('a')]).dispatch();
         await SendWelcomeEmail(userId: 1).dispatch();
@@ -528,6 +592,32 @@ void main() {
         'finally',
       ]);
     });
+
+    test('a chain runs now, in order, and counts once', () async {
+      Batch batch = await batchOf(<DoxJob>[BatchStep('a')])
+          .chain(<DoxJob>[BatchStep('b'), BatchStep('c')])
+          .dispatch();
+      expect(JobLog.handled, <String>['a', 'b', 'c']);
+      expect(batch.totalJobs, 2);
+      expect(batch.pendingJobs, 0);
+      expect(calls, <String>[
+        'before',
+        'progress',
+        'progress',
+        'then',
+        'finally',
+      ]);
+    });
+
+    test('a failed job stops its chain and is counted once', () async {
+      Batch batch = await Queue.batch(<DoxJob>[BatchStep('a')])
+          .chain(<DoxJob>[BatchStep('b', 'throw'), BatchStep('c')])
+          .allowFailures()
+          .dispatch();
+      expect(JobLog.handled, <String>['a', 'b']);
+      expect(batch.failedJobs, 1);
+      expect(batch.finished, isTrue);
+    });
   });
 
   group('batches with Queue.fake()', () {
@@ -565,6 +655,39 @@ void main() {
             'Expected 2 batches to be dispatched, but 1 was.',
           ),
         ),
+      );
+    });
+
+    test('keeps the chains of a batch', () async {
+      expect(
+        () => fake.assertBatchedChain(<Type>[BatchStep]),
+        throwsA(isA<AssertionError>()),
+      );
+      Batch batch = await Queue.batch(<DoxJob>[BatchStep('a')])
+          .chain(<DoxJob>[BatchStep('b'), Callback('c')])
+          .dispatch();
+      expect(batch.totalJobs, 2);
+      fake.assertBatchedChain(<Type>[BatchStep, Callback]);
+      fake.assertBatched((PendingBatch batch) => batch.chains.length == 1);
+      fake.assertNothingPushed();
+      expect(
+        () => fake.assertBatchedChain(<Type>[Callback]),
+        throwsA(
+          isA<AssertionError>().having(
+            (AssertionError error) => error.message,
+            'message',
+            'Expected a batch with a chain of Callback. Chains: BatchStep, '
+                'Callback.',
+          ),
+        ),
+      );
+      expect(JobLog.handled, isEmpty);
+    });
+
+    test('a chain of a batch needs a job', () {
+      expect(
+        () => Queue.batch(<DoxJob>[BatchStep('a')]).chain(<DoxJob>[]),
+        throwsArgumentError,
       );
     });
   });

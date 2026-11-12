@@ -146,6 +146,29 @@ class QueueFake {
     }
   }
 
+  /// A dispatched batch has a chain (`PendingBatch.chain()`) of exactly
+  /// these [types], in this order.
+  /// ```
+  /// queue.assertBatchedChain(<Type>[ImportOrders, SumOrders]);
+  /// ```
+  void assertBatchedChain(List<Type> types) {
+    List<PendingChain> chains = <PendingChain>[
+      for (PendingBatch batch in batches) ...batch.chains,
+    ];
+    for (PendingChain chain in chains) {
+      List<Type> chained = <Type>[
+        for (DoxJob job in chain.jobs) job.runtimeType,
+      ];
+      if (_sameTypes(chained, types)) return;
+    }
+    String seen = chains.isEmpty
+        ? 'No batch has a chain.'
+        : 'Chains: ${chains.map(_chainNames).join('; ')}.';
+    throw AssertionError(
+      'Expected a batch with a chain of ${types.join(', ')}. $seen',
+    );
+  }
+
   /// Exactly [count] batches were dispatched. 0: none.
   void assertBatchCount(int count) {
     if (batches.length != count) {

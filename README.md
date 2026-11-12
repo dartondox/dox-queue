@@ -739,6 +739,22 @@ class ImportRows extends DoxJob with Batchable {
 - `finished` is true when every job ran (done or failed), or the batch was cancelled.
 - Each count is changed in one atomic step (`UPDATE ... RETURNING` on SQLite and Postgres, a transaction with a row lock on MySQL and MariaDB). So with many workers `then`, `catchError` and `whenComplete` still run once.
 
+### A chain inside a batch
+
+Opt-in `chain(jobs)` adds a chain to the batch. Its jobs run one after the other:
+
+```dart
+await Queue.batch(<DoxJob>[ImportUsers()])
+    .chain(<DoxJob>[ImportOrders(), SumOrders()])
+    .dispatch();
+```
+
+- The batch counts the chain as one job. It is done when its last job is done.
+- When a job of the chain fails for good, the rest of the chain is dropped and the batch counts one failed job. The usual rules count: the first failure cancels the batch, unless `allowFailures()`.
+- A skipped `ShouldBeUnique` first job takes the chain out of the counts. A skipped later job fails the chain.
+- `add(jobs)` takes jobs only, not chains.
+- `Queue.fake()` keeps the chains in `PendingBatch.chains`. Check them with `assertBatchedChain([ImportOrders, SumOrders])`.
+
 ### Traps
 
 - A `ShouldBeUnique` job that is skipped (the same job is on the queue) is taken out of `totalJobs` and `pendingJobs`. `progress` does not run for it. When it was the last open job, `then` and `whenComplete` run.
@@ -746,7 +762,6 @@ class ImportRows extends DoxJob with Batchable {
 - The counts follow the at-least-once rule of the queue. A job that runs twice (eg. it ran longer than `retryAfter`, or a worker crashed in the middle of a fail) can be counted twice. `failedJobs` never goes below 0.
 - The batch is marked finished before `then` and `whenComplete` run, so `add()` from a callback (or from another process at that time) throws a `StateError`.
 - A worker that crashes after a job is done, and before it counted it, leaves the batch with that job pending. Then `then` and `whenComplete` never run. `prune-batches --unfinished=N` deletes such batches.
-- A chain inside a batch is not supported.
 - Batches do not use `afterCommit`: the batch is saved and its jobs are pushed at once.
 - The `sync` driver runs the jobs at `dispatch()`, one after the other, and counts them. A job that throws counts as failed: `dispatch()` does not throw. The table is still needed.
 - `Queue.fake()` keeps the batch in `batches`, and saves and runs nothing. Its jobs are not in `pushed`. `add()` adds to the faked batch, `cancel()` does nothing, and `Queue.findBatch()` gives null.

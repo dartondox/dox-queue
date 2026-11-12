@@ -132,6 +132,8 @@ class JobBus {
   static Future<void> done(JobPayload payload, JobRegistry jobs) async {
     String? batch = payload.batch;
     if (batch == null) return;
+    // a chain of a batch counts once, when its last job is done
+    if (payload.chain?.isNotEmpty ?? false) return;
     // a retried job that failed before: it is no longer failed
     await _count(
       payload,
@@ -198,7 +200,7 @@ class JobBus {
         'Queue: can not read ${item['job']}, the next job of a chain: '
         '$error',
       );
-      await Queue._callback(onError, error: error);
+      await _chainStopped(payload, onError, jobs, error);
       return;
     }
     String id = JobPayload.newId();
@@ -210,9 +212,26 @@ class JobBus {
       jobs,
       chain: rest.isEmpty ? null : rest,
       chainCatch: payload.chainCatch,
+      batch: payload.batch,
+      batchFailed: payload.batchFailed,
     );
     if (!await Queue._send(next, id, nextPayload, driver, null)) {
-      await Queue._callback(onError, error: _skipped(next));
+      await _chainStopped(payload, onError, jobs, _skipped(next));
+    }
+  }
+
+  /// The chain of [payload] stops before its next job: run its catch
+  /// job, and count the chain as failed in its batch.
+  static Future<void> _chainStopped(
+    JobPayload payload,
+    DoxJob? onError,
+    JobRegistry jobs,
+    Object error,
+  ) async {
+    await Queue._callback(onError, error: error);
+    String? batch = payload.batch;
+    if (batch != null && !payload.batchFailed) {
+      await _count(payload, batch, jobs, _BatchStep.failed, error);
     }
   }
 
@@ -275,6 +294,17 @@ class PendingBatch {
   /// the jobs of the batch
   final List<DoxJob> jobs;
 
+  /// The chains of [chain]. Each chain counts as one job of the batch.
+  final List<PendingChain> chains = <PendingChain>[];
+
+  /// every job and every chain, as lists: a job is a list of one
+  List<List<DoxJob>> get _units {
+    return <List<DoxJob>>[
+      for (DoxJob job in jobs) <DoxJob>[job],
+      for (PendingChain chain in chains) chain.jobs,
+    ];
+  }
+
   /// the name of [name]. Empty by default.
   String batchName = '';
 
@@ -288,6 +318,23 @@ class PendingBatch {
   DoxJob? thenJob;
   DoxJob? catchJob;
   DoxJob? completeJob;
+
+  /// Opt-in: add a chain to the batch. Its [jobs] run one after the
+  /// other, like `Queue.chain()`. The batch counts the chain as one job:
+  /// it is done when its last job is done, and failed when one of its
+  /// jobs fails for good (then the rest of the chain is dropped). A
+  /// skipped [ShouldBeUnique] first job takes the chain out of the
+  /// counts. A skipped later job fails the chain. Throws an
+  /// [ArgumentError] when [jobs] is empty.
+  /// ```
+  /// await Queue.batch(<DoxJob>[ImportUsers()])
+  ///     .chain(<DoxJob>[ImportOrders(), SumOrders()])
+  ///     .dispatch();
+  /// ```
+  PendingBatch chain(List<DoxJob> jobs) {
+    chains.add(PendingChain(jobs));
+    return this;
+  }
 
   /// a name to find the batch by, eg. in logs
   PendingBatch name(String value) {
@@ -339,14 +386,15 @@ class PendingBatch {
   /// With the `sync` driver the jobs run now, one after the other.
   Future<Batch> dispatch({String? queue, String? connection}) async {
     String id = JobPayload.newId();
+    List<List<DoxJob>> units = _units;
     QueueFake? fake = Queue._fake;
     if (fake != null) {
       fake.batches.add(this);
       return Batch._(
         id,
         batchName,
-        jobs.length,
-        jobs.length,
+        units.length,
+        units.length,
         0,
         DateTime.now(),
         null,
@@ -358,7 +406,7 @@ class PendingBatch {
     QueueConfig config = Queue.config;
     JobRegistry registry = config.jobs;
     // a job that is not in the registry throws now, before the save
-    List<JobPayload> payloads = Batch._payloads(id, jobs, queue, registry);
+    List<JobPayload> payloads = Batch._payloads(id, units, queue, registry);
     Map<String, Object?>? item(DoxJob? job) {
       return job == null ? null : Queue._item(job, null, registry);
     }
@@ -380,7 +428,7 @@ class PendingBatch {
         substitutionValues: <String, dynamic>{
           'id': id,
           'name': batchName,
-          'total': jobs.length,
+          'total': units.length,
           'options': jsonEncode(options),
           'now': QueueDriver.now(),
         },
@@ -394,7 +442,7 @@ class PendingBatch {
       );
     }
     await Queue._callback(beforeJob, batch: id);
-    await Batch._push(id, jobs, payloads, connection, registry);
+    await Batch._push(id, units, payloads, queue, connection, registry);
     return (await Queue.findBatch(id))!;
   }
 }
@@ -479,12 +527,11 @@ class Batch {
     }
     if (jobs.isEmpty) return;
     JobRegistry registry = Queue.config.jobs;
-    List<JobPayload> payloads = _payloads(
-      id,
-      jobs,
-      _options['queue'] as String?,
-      registry,
-    );
+    String? queue = _options['queue'] as String?;
+    List<List<DoxJob>> units = <List<DoxJob>>[
+      for (DoxJob job in jobs) <DoxJob>[job],
+    ];
+    List<JobPayload> payloads = _payloads(id, units, queue, registry);
     Batch? open = await _change(
       id,
       total: jobs.length,
@@ -499,8 +546,9 @@ class Batch {
     }
     await _push(
       id,
-      jobs,
+      units,
       payloads,
+      queue,
       _options['connection'] as String?,
       registry,
     );
@@ -511,21 +559,36 @@ class Batch {
     return SqlQueryBuilder().getDBDriver(Queue.config.connection);
   }
 
+  /// the payload of the first job of each unit (a job, or a chain with
+  /// the rest of it in `chain`)
   static List<JobPayload> _payloads(
     String id,
-    List<DoxJob> jobs,
+    List<List<DoxJob>> units,
     String? queue,
     JobRegistry registry,
   ) {
     return <JobPayload>[
-      for (DoxJob job in jobs)
-        Queue._payload(job, JobPayload.newId(), queue, registry, batch: id),
+      for (List<DoxJob> unit in units)
+        Queue._payload(
+          unit.first,
+          JobPayload.newId(),
+          queue,
+          registry,
+          batch: id,
+          chain: unit.length == 1
+              ? null
+              : <Map<String, Object?>>[
+                  for (DoxJob job in unit.skip(1))
+                    Queue._item(job, queue, registry),
+                ],
+        ),
     ];
   }
 
-  /// Push the [jobs] of the batch [id]. A [ShouldBeUnique] job that is
+  /// Push the [units] of the batch [id]: a unit is a job, or a chain
+  /// (then its first job is pushed). A [ShouldBeUnique] job that is
   /// skipped is taken out of the counts. The `sync` driver runs each
-  /// job now and counts it as done or failed. When a push throws, the
+  /// unit now and counts it as done or failed. When a push throws, the
   /// jobs that were not pushed are taken out of the counts, the batch is
   /// cancelled (so it is finished and can be pruned), and the error is
   /// thrown again. No callback runs for them. The jobs pushed before
@@ -534,17 +597,21 @@ class Batch {
   /// its work.
   static Future<void> _push(
     String id,
-    List<DoxJob> jobs,
+    List<List<DoxJob>> units,
     List<JobPayload> payloads,
+    String? queue,
     String? connection,
     JobRegistry registry,
   ) async {
     QueueConfig settings = Queue.config.connectionOf(connection);
     QueueDriver? driver = Queue._target(settings, connection);
-    for (int i = 0; i < jobs.length; i++) {
-      DoxJob job = jobs[i];
+    for (int i = 0; i < units.length; i++) {
+      List<DoxJob> unit = units[i];
+      DoxJob job = unit.first;
       JobPayload payload = payloads[i];
-      _batchIds[job] = id;
+      for (DoxJob each in unit) {
+        _batchIds[each] = id;
+      }
       if (driver != null) {
         bool sent;
         try {
@@ -552,7 +619,7 @@ class Batch {
         } catch (_) {
           // the jobs from here on are not pushed: take them out and
           // cancel the batch, so it is finished and can be pruned
-          int left = jobs.length - i;
+          int left = units.length - i;
           Batch? batch = await _change(id, total: -left, pending: -left);
           await batch?.cancel();
           rethrow;
@@ -560,20 +627,42 @@ class Batch {
         if (!sent) await _record(id, registry, _BatchStep.skipped);
         continue;
       }
-      bool sent;
-      try {
-        sent = await Queue._send(
-          job,
-          payload.id,
-          settings.serializeSync ? payload : null,
-          null,
-          null,
-        );
-      } catch (error) {
-        await _record(id, registry, _BatchStep.failed, error: error);
-        continue;
+      _BatchStep step = _BatchStep.done;
+      Object? error;
+      for (int j = 0; j < unit.length; j++) {
+        JobPayload saved = j == 0
+            ? payload
+            : Queue._payload(
+                unit[j],
+                JobPayload.newId(),
+                queue,
+                registry,
+                batch: id,
+              );
+        try {
+          bool sent = await Queue._send(
+            unit[j],
+            saved.id,
+            settings.serializeSync ? saved : null,
+            null,
+            null,
+          );
+          if (sent) continue;
+        } catch (thrown) {
+          step = _BatchStep.failed;
+          error = thrown;
+          break;
+        }
+        // a skipped first job takes the unit out, a later one fails it
+        if (j == 0) {
+          step = _BatchStep.skipped;
+        } else {
+          step = _BatchStep.failed;
+          error = JobBus._skipped(unit[j]);
+        }
+        break;
       }
-      await _record(id, registry, sent ? _BatchStep.done : _BatchStep.skipped);
+      await _record(id, registry, step, error: error);
     }
   }
 

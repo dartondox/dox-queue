@@ -373,6 +373,7 @@ class Queue {
     List<Map<String, Object?>>? chain,
     Map<String, Object?>? chainCatch,
     String? batch,
+    bool batchFailed = false,
   }) {
     JobCodec codec = jobs.of(job);
     String data = jsonEncode(codec.encode(job), toEncodable: _toJson);
@@ -387,6 +388,7 @@ class Queue {
       chain: chain,
       chainCatch: chainCatch,
       batch: batch,
+      batchFailed: batchFailed,
     );
   }
 
