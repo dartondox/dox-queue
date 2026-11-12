@@ -91,8 +91,8 @@ class QueueConfig {
   /// False (the default): the job object runs as it is.
   final bool serializeSync;
 
-  /// Opt-in: more queue connections, by name. This config is the main connection: it is used when
-  /// no connection is named. Pick another one with
+  /// Opt-in: more queue connections, by name. This config is the main
+  /// connection: it is used when no connection is named. Pick another one with
   /// `dispatch(connection: 'database')` and the worker flag
   /// `--connection=database`.
   ///
@@ -107,11 +107,10 @@ class QueueConfig {
   /// jobs of the table.
   final Map<String, QueueConfig> connections;
 
-  /// Opt-in: the default of `dispatch(afterCommit:)` for every dispatch,
-  /// True: a job dispatched inside a
-  /// transaction of the default dox_orm connection is pushed only after
-  /// that transaction commits, and a rollback drops it. False (the
-  /// default): the job is pushed at once. Only the main config counts,
+  /// Opt-in: the default of `dispatch(afterCommit:)` for every dispatch.
+  /// True: a job dispatched inside a transaction of the default dox_orm
+  /// connection is pushed only after that transaction commits, and a rollback
+  /// drops it. False (the default): the job is pushed at once. Only the main config counts,
   /// not the entries of [connections].
   final bool afterCommit;
 

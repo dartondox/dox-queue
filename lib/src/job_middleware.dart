@@ -45,8 +45,9 @@ abstract class JobMiddleware {
   }
 }
 
-/// Lets a job run at most [max] times [per] time window. Over the limit, the job goes back on the queue until
-/// the window ends. Every job with the same [key] shares the limit.
+/// Lets a job run at most [max] times [per] time window. Over the limit, the
+/// job goes back on the queue until the window ends. Every job with the same
+/// [key] shares the limit.
 ///
 /// The count is kept in the default cache store of the app (`Cache()`),
 /// so every worker that uses the same store shares it. Use a `redis` (or
@@ -76,9 +77,9 @@ class RateLimited extends JobMiddleware {
   }
 }
 
-/// Lets only one job with the same [key] run at a time. When another one runs, the job goes back on the
-/// queue after [releaseAfter]. Null [releaseAfter]: the job is dropped
-/// (deleted) instead.
+/// Lets only one job with the same [key] run at a time. When another one runs,
+/// the job goes back on the queue after [releaseAfter]. Null [releaseAfter]:
+/// the job is dropped (deleted) instead.
 ///
 /// [expireAfter] frees the lock after this time, in case a worker
 /// crashed while it held it. Null: the lock is only freed when the job
@@ -114,9 +115,9 @@ class WithoutOverlapping extends JobMiddleware {
   }
 }
 
-/// After [maxAttempts] errors of jobs with the same [key] in [decay]
-/// time, stop running them until [decay] is over. Use it for a service that is down: the jobs
-/// wait instead of failing at once.
+/// After [maxAttempts] errors of jobs with the same [key] in [decay] time, stop
+/// running them until [decay] is over. Use it for a service that is down: the
+/// jobs wait instead of failing at once.
 ///
 /// When `handle()` throws, the job goes back on the queue after
 /// [retryAfter] and the error is logged. Over the limit, the job goes

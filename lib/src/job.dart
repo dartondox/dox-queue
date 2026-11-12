@@ -75,9 +75,10 @@ abstract class DoxJob {
   /// for the old run first.
   Duration? get timeout => null;
 
-  /// Opt-in: retry the job until this time, not [tries] times. It is
-  /// read once, when the job is dispatched, and saved with the job. After a failed try, the job fails when this
-  /// time has passed, else it is tried again after its [backoff].
+  /// Opt-in: retry the job until this time, not [tries] times. It is read once,
+  /// when the job is dispatched, and saved with the job. After a failed try,
+  /// the job fails when this time has passed, else it is tried again after its
+  /// [backoff].
   /// ```
   /// @override
   /// DateTime? get retryUntil => DateTime.now().add(Duration(minutes: 10));
