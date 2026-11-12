@@ -212,9 +212,12 @@ See `references/chains-and-batches.md`.
 
 ### 6. Schedule a job
 
-With dox_scheduler:
+With dox_scheduler. `s.job()` comes from dox_queue, so import it:
 
 ```dart
+import 'package:dox_queue/dox_queue.dart';
+import 'package:dox_scheduler/dox_scheduler.dart';
+
 void schedule(Schedule s) {
   s.job(SendDailyReport()).dailyAt('08:00');
   s.job(PruneFiles(), name: 'prune', connection: 'database').hourly();
