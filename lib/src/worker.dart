@@ -128,13 +128,14 @@ class Worker {
       await const QueueEvent(QueueEventType.looping).fire();
       ReservedJob? job;
       try {
-        job = await _next();
+        job = await _nextOrStop();
       } catch (error, stack) {
         QueueLog.danger('Queue: can not take a job: $error', '$stack');
         await _pause(options.sleep);
         continue;
       }
       if (job == null) {
+        if (_stopping) return;
         if (options.stopWhenEmpty || options.once) return;
         await _pause(options.sleep);
         continue;
@@ -162,6 +163,20 @@ class Worker {
       QueueLog.info('Queue: memory is over $memory MB, stopping');
       stop();
     }
+  }
+
+  /// Like [_next], but gives null at once on [stop]. A pop can hang
+  /// for ever (eg. Redis is down), so the loop must not wait for it.
+  /// Future.any keeps a listener on the pop, so a later error of it is
+  /// not unhandled. If the pop later reserves a job, nobody runs it and
+  /// it goes back to the queue after the driver's retry after time.
+  Future<ReservedJob?> _nextOrStop() {
+    return Future.any(<Future<ReservedJob?>>[_next(), _stopped()]);
+  }
+
+  Future<ReservedJob?> _stopped() async {
+    await _wake.future;
+    return null;
   }
 
   Future<ReservedJob?> _next() async {
