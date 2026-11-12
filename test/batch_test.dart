@@ -120,6 +120,30 @@ PendingBatch batchOf(List<DoxJob> jobs) {
 
 final Set<String> _made = <String>{};
 
+/// the batch events that fired, as `<type> <done>/<total> f<failed>`,
+/// with ` finished`, ` cancelled` and the error when set
+List<String> events = <String>[];
+
+void logEvent(QueueEvent event) {
+  Batch batch = event.batch!;
+  events.add(
+    '${event.type.name} ${batch.name} '
+    '${batch.processedJobs}/${batch.totalJobs} f${batch.failedJobs}'
+    '${batch.finished ? ' finished' : ''}'
+    '${batch.cancelled ? ' cancelled' : ''}'
+    '${event.error == null ? '' : ' ${event.error}'}',
+  );
+}
+
+/// listen to every batch event with [logEvent]
+void listenToBatches() {
+  Queue.batchDispatched(logEvent);
+  Queue.batchProgress(logEvent);
+  Queue.batchFinished(logEvent);
+  Queue.batchFailed(logEvent);
+  Queue.batchCancelled(logEvent);
+}
+
 /// make and empty the job_batches table of the dox_orm connection [name]
 /// (null: the default connection)
 Future<void> resetBatches(String? name) async {
@@ -137,8 +161,11 @@ void main() {
   setUp(() async {
     JobLog.clear();
     calls.clear();
+    events.clear();
+    listenToBatches();
     await useTestCache();
   });
+  tearDown(Queue.forgetListeners);
   tearDownAll(closeTestCache);
 
   for (TestStore store in testStores) {
@@ -395,6 +422,127 @@ void main() {
         expect(now?.totalJobs, 1);
       });
 
+      test('a chain in a batch counts as one job', () async {
+        Batch batch = await batchOf(<DoxJob>[BatchStep('a')])
+            .chain(<DoxJob>[BatchStep('b'), BatchStep('c', 'retry')])
+            .dispatch();
+        expect(batch.totalJobs, 2);
+        expect(batch.pendingJobs, 2);
+        await work();
+        Batch? done = await Queue.findBatch(batch.id);
+        expect(JobLog.handled, <String>['a', 'b', 'c', 'c']);
+        expect(done?.totalJobs, 2);
+        expect(done?.pendingJobs, 0);
+        expect(done?.failedJobs, 0);
+        expect(done?.finished, isTrue);
+        expect(calls, <String>[
+          'before',
+          'progress',
+          'progress',
+          'then',
+          'finally',
+        ]);
+      });
+
+      test('a chain in a batch is done after its last job', () async {
+        Batch batch = await Queue.batch(<DoxJob>[BatchStep('a')])
+            .chain(<DoxJob>[BatchStep('b'), BatchStep('c')])
+            .dispatch();
+        Worker one = Worker(
+          driver: Queue.driver,
+          jobs: registry,
+          options: const WorkerOptions(once: true),
+        );
+        await one.run(); // a
+        await one.run(); // b, pushes c
+        Batch? now = await Queue.findBatch(batch.id);
+        expect(now?.pendingJobs, 1);
+        expect(now?.processedJobs, 1);
+        ReservedJob? c = await Queue.driver.pop('default');
+        expect(c?.payload.batch, batch.id);
+        await one.process(c!);
+        now = await Queue.findBatch(batch.id);
+        expect(now?.pendingJobs, 0);
+        expect(now?.finished, isTrue);
+      });
+
+      test('a failed job of a chain fails the batch once', () async {
+        Batch batch = await batchOf(<DoxJob>[BatchStep('a')])
+            .chain(<DoxJob>[BatchStep('b', 'throw'), BatchStep('c')])
+            .dispatch();
+        await work();
+        Batch? done = await Queue.findBatch(batch.id);
+        // the rest of the chain is dropped
+        expect(JobLog.handled, <String>['a', 'b']);
+        expect(done?.failedJobs, 1);
+        expect(done?.pendingJobs, 1);
+        expect(done?.cancelled, isTrue);
+        expect(done?.finished, isTrue);
+        expect(calls, <String>[
+          'before',
+          'progress',
+          'catch: Bad state: b broken',
+          'finally',
+        ]);
+      });
+
+      test('fires the batch events in order', () async {
+        await Queue.batch(<DoxJob>[BatchStep('a')])
+            .chain(<DoxJob>[BatchStep('b'), BatchStep('c')])
+            .name('ev')
+            .dispatch();
+        expect(events, <String>['batchDispatched ev 0/2 f0']);
+        await work();
+        expect(events, <String>[
+          'batchDispatched ev 0/2 f0',
+          'batchProgress ev 1/2 f0',
+          'batchProgress ev 2/2 f0',
+          'batchFinished ev 2/2 f0 finished',
+        ]);
+      });
+
+      test('fires failed, then cancelled, once', () async {
+        await Queue.batch(<DoxJob>[
+          BatchStep('a'),
+          BatchStep('b', 'throw'),
+          BatchStep('c', 'throw'),
+        ]).name('ev').dispatch();
+        await work();
+        expect(events, <String>[
+          'batchDispatched ev 0/3 f0',
+          'batchProgress ev 1/3 f0',
+          'batchFailed ev 1/3 f1 Bad state: b broken',
+          'batchCancelled ev 1/3 f1 finished cancelled',
+          'batchFinished ev 1/3 f2 finished cancelled',
+        ]);
+      });
+
+      test('allowFailures fires progress for a failed job', () async {
+        await Queue.batch(<DoxJob>[BatchStep('a', 'throw')])
+            .name('ev')
+            .allowFailures()
+            .dispatch();
+        await work();
+        expect(events, <String>[
+          'batchDispatched ev 0/1 f0',
+          'batchFailed ev 0/1 f1 Bad state: a broken',
+          'batchProgress ev 0/1 f1',
+          'batchFinished ev 0/1 f1 finished',
+        ]);
+      });
+
+      test('cancel() fires cancelled once', () async {
+        Batch batch = await Queue.batch(<DoxJob>[BatchStep('a')])
+            .name('ev')
+            .dispatch();
+        await batch.cancel();
+        await batch.cancel();
+        expect(events, <String>[
+          'batchDispatched ev 0/1 f0',
+          'batchCancelled ev 0/1 f0 finished cancelled',
+        ]);
+      });
+
       test('the jobs carry the batch id, a plain job does not', () async {
         Batch batch = await Queue.batch(<DoxJob>[BatchStep('a')]).dispatch();
         await SendWelcomeEmail(userId: 1).dispatch();
@@ -424,6 +572,156 @@ void main() {
       expect(await Queue.pruneBatches(later), 1);
       expect(await Queue.findBatch(done.id), isNull);
       expect(await Queue.findBatch(open.id), isNotNull);
+    });
+  });
+
+  group('afterCommit on sqlite', () {
+    // the transactions run on the default dox_orm connection: sqlite
+    Future<void> useQueue({bool afterCommit = false}) async {
+      await testStores.first.reset();
+      await resetBatches('sqlite');
+      Queue.configure(
+        QueueConfig(
+          driver: 'database',
+          jobs: registry,
+          connection: 'sqlite',
+          afterCommit: afterCommit,
+        ),
+      );
+    }
+
+    tearDown(Queue.close);
+
+    Future<int> queued() async {
+      int count = 0;
+      while (await Queue.driver.pop('default') != null) {
+        count++;
+      }
+      return count;
+    }
+
+    test('a batch is saved and pushed after the commit', () async {
+      await useQueue();
+      Batch? inside;
+      Batch batch = await QueryBuilder.transaction(() async {
+        Batch batch = await batchOf(<DoxJob>[BatchStep('a')])
+            .chain(<DoxJob>[BatchStep('b')])
+            .name('ev')
+            .dispatch(afterCommit: true);
+        inside = await Queue.findBatch(batch.id);
+        expect(await Queue.driver.pop('default'), isNull);
+        expect(calls, isEmpty);
+        expect(events, isEmpty);
+        return batch;
+      });
+      expect(inside, isNull);
+      expect(batch.totalJobs, 2);
+      expect(batch.finished, isFalse);
+      Batch? saved = await Queue.findBatch(batch.id);
+      expect(saved?.name, 'ev');
+      expect(saved?.totalJobs, 2);
+      expect(calls, <String>['before']);
+      expect(events, <String>['batchDispatched ev 0/2 f0']);
+      expect(await queued(), 2);
+    });
+
+    test('a rollback drops the batch', () async {
+      await useQueue();
+      String? id;
+      await expectLater(
+        QueryBuilder.transaction(() async {
+          Batch batch = await batchOf(<DoxJob>[BatchStep('a')])
+              .dispatch(afterCommit: true);
+          id = batch.id;
+          throw StateError('stop');
+        }),
+        throwsStateError,
+      );
+      expect(await Queue.findBatch(id!), isNull);
+      expect(await queued(), 0);
+      expect(calls, isEmpty);
+      expect(events, isEmpty);
+    });
+
+    test('outside a transaction it is saved at once', () async {
+      await useQueue();
+      Batch batch = await Queue.batch(<DoxJob>[BatchStep('a')])
+          .dispatch(afterCommit: true);
+      expect(await Queue.findBatch(batch.id), isNotNull);
+      expect(await queued(), 1);
+    });
+
+    test('the setting turns it on, false wins over it', () async {
+      await useQueue(afterCommit: true);
+      await QueryBuilder.transaction(() async {
+        await Queue.batch(<DoxJob>[BatchStep('a')]).dispatch();
+        expect(await Queue.driver.pop('default'), isNull);
+        await Queue.batch(<DoxJob>[BatchStep('b')])
+            .dispatch(afterCommit: false);
+        expect(await Queue.driver.pop('default'), isNotNull);
+      });
+      expect(await queued(), 1);
+    });
+
+    test('a chain is pushed after the commit, dropped on rollback', () async {
+      await useQueue();
+      await QueryBuilder.transaction(() async {
+        await Queue.chain(<DoxJob>[BatchStep('a'), BatchStep('b')])
+            .dispatch(afterCommit: true);
+        expect(await Queue.driver.pop('default'), isNull);
+      });
+      ReservedJob? first = await Queue.driver.pop('default');
+      expect(first?.payload.chain, hasLength(1));
+      await expectLater(
+        QueryBuilder.transaction(() async {
+          await Queue.chain(<DoxJob>[BatchStep('c')])
+              .dispatch(afterCommit: true);
+          throw StateError('stop');
+        }),
+        throwsStateError,
+      );
+      expect(await queued(), 0);
+    });
+  });
+
+  group('afterCommit with the sync driver', () {
+    setUp(() async {
+      await resetBatches(null);
+      Queue.configure(QueueConfig(jobs: registry));
+    });
+
+    test('a batch runs after the commit', () async {
+      await QueryBuilder.transaction(() async {
+        Batch batch = await Queue.batch(<DoxJob>[BatchStep('a')])
+            .chain(<DoxJob>[BatchStep('b'), BatchStep('c')])
+            .dispatch(afterCommit: true);
+        expect(batch.pendingJobs, 2);
+        expect(JobLog.handled, isEmpty);
+      });
+      expect(JobLog.handled, <String>['a', 'b', 'c']);
+    });
+
+    test('a chain runs after the commit, in order', () async {
+      await QueryBuilder.transaction(() async {
+        await Queue.chain(<DoxJob>[BatchStep('a'), BatchStep('b')])
+            .dispatch(afterCommit: true);
+        expect(JobLog.handled, isEmpty);
+      });
+      expect(JobLog.handled, <String>['a', 'b']);
+    });
+
+    test('a rollback runs nothing', () async {
+      await expectLater(
+        QueryBuilder.transaction(() async {
+          await Queue.batch(<DoxJob>[BatchStep('a')])
+              .dispatch(afterCommit: true);
+          await Queue.chain(<DoxJob>[BatchStep('b')])
+              .dispatch(afterCommit: true);
+          throw StateError('stop');
+        }),
+        throwsStateError,
+      );
+      expect(JobLog.handled, isEmpty);
     });
   });
 
@@ -528,6 +826,41 @@ void main() {
         'finally',
       ]);
     });
+
+    test('fires the events in the dispatcher', () async {
+      await Queue.batch(<DoxJob>[BatchStep('a')]).name('ev').dispatch();
+      expect(events, <String>[
+        'batchDispatched ev 0/1 f0',
+        'batchProgress ev 1/1 f0',
+        'batchFinished ev 1/1 f0 finished',
+      ]);
+    });
+
+    test('a chain runs now, in order, and counts once', () async {
+      Batch batch = await batchOf(<DoxJob>[BatchStep('a')])
+          .chain(<DoxJob>[BatchStep('b'), BatchStep('c')])
+          .dispatch();
+      expect(JobLog.handled, <String>['a', 'b', 'c']);
+      expect(batch.totalJobs, 2);
+      expect(batch.pendingJobs, 0);
+      expect(calls, <String>[
+        'before',
+        'progress',
+        'progress',
+        'then',
+        'finally',
+      ]);
+    });
+
+    test('a failed job stops its chain and is counted once', () async {
+      Batch batch = await Queue.batch(<DoxJob>[BatchStep('a')])
+          .chain(<DoxJob>[BatchStep('b', 'throw'), BatchStep('c')])
+          .allowFailures()
+          .dispatch();
+      expect(JobLog.handled, <String>['a', 'b']);
+      expect(batch.failedJobs, 1);
+      expect(batch.finished, isTrue);
+    });
   });
 
   group('batches with Queue.fake()', () {
@@ -551,6 +884,7 @@ void main() {
       fake.assertBatchCount(1);
       fake.assertNothingPushed();
       expect(JobLog.handled, isEmpty);
+      expect(events, isEmpty);
       expect(await Queue.findBatch(batch.id), isNull);
       expect(
         () => fake.assertBatched((PendingBatch batch) => false),
@@ -565,6 +899,44 @@ void main() {
             'Expected 2 batches to be dispatched, but 1 was.',
           ),
         ),
+      );
+    });
+
+    test('keeps the chains of a batch', () async {
+      expect(
+        () => fake.assertBatchedChain(<Type>[BatchStep]),
+        throwsA(isA<AssertionError>()),
+      );
+      Batch batch = await Queue.batch(<DoxJob>[BatchStep('a')])
+          .chain(<DoxJob>[BatchStep('b'), Callback('c')])
+          .dispatch();
+      expect(batch.totalJobs, 2);
+      fake.assertBatchedChain(<Type>[BatchStep, Callback]);
+      // the fake keeps it at dispatch, also with afterCommit
+      await QueryBuilder.transaction(() async {
+        await Queue.batch(<DoxJob>[BatchStep('c')]).dispatch(afterCommit: true);
+      });
+      fake.assertBatchCount(2);
+      fake.assertBatched((PendingBatch batch) => batch.chains.length == 1);
+      fake.assertNothingPushed();
+      expect(
+        () => fake.assertBatchedChain(<Type>[Callback]),
+        throwsA(
+          isA<AssertionError>().having(
+            (AssertionError error) => error.message,
+            'message',
+            'Expected a batch with a chain of Callback. Chains: BatchStep, '
+                'Callback.',
+          ),
+        ),
+      );
+      expect(JobLog.handled, isEmpty);
+    });
+
+    test('a chain of a batch needs a job', () {
+      expect(
+        () => Queue.batch(<DoxJob>[BatchStep('a')]).chain(<DoxJob>[]),
+        throwsArgumentError,
       );
     });
   });

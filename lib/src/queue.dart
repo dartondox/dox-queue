@@ -344,6 +344,36 @@ class Queue {
     QueueEvent.listen(QueueEventType.stopping, listener);
   }
 
+  /// Opt-in: listen to [QueueEventType.batchDispatched]: a batch was
+  /// saved, before its jobs are pushed. `event.batch` is the batch.
+  static void batchDispatched(QueueListener listener) {
+    QueueEvent.listen(QueueEventType.batchDispatched, listener);
+  }
+
+  /// Opt-in: listen to [QueueEventType.batchProgress]: a job of a batch
+  /// is done (or failed, with `allowFailures()`).
+  static void batchProgress(QueueListener listener) {
+    QueueEvent.listen(QueueEventType.batchProgress, listener);
+  }
+
+  /// Opt-in: listen to [QueueEventType.batchFinished]: every job of a
+  /// batch ran.
+  static void batchFinished(QueueListener listener) {
+    QueueEvent.listen(QueueEventType.batchFinished, listener);
+  }
+
+  /// Opt-in: listen to [QueueEventType.batchFailed]: the first job of a
+  /// batch failed for good.
+  static void batchFailed(QueueListener listener) {
+    QueueEvent.listen(QueueEventType.batchFailed, listener);
+  }
+
+  /// Opt-in: listen to [QueueEventType.batchCancelled]: a batch was
+  /// cancelled.
+  static void batchCancelled(QueueListener listener) {
+    QueueEvent.listen(QueueEventType.batchCancelled, listener);
+  }
+
   /// Remove every queue listener (eg. between tests).
   static void forgetListeners() => QueueEvent.forgetListeners();
 
@@ -373,6 +403,7 @@ class Queue {
     List<Map<String, Object?>>? chain,
     Map<String, Object?>? chainCatch,
     String? batch,
+    bool batchFailed = false,
   }) {
     JobCodec codec = jobs.of(job);
     String data = jsonEncode(codec.encode(job), toEncodable: _toJson);
@@ -387,6 +418,7 @@ class Queue {
       chain: chain,
       chainCatch: chainCatch,
       batch: batch,
+      batchFailed: batchFailed,
     );
   }
 

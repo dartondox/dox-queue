@@ -83,6 +83,40 @@ class ImportRows extends DoxJob with Batchable {
 - The first job that fails for good cancels the batch. Call `allowFailures()` to keep it going.
 - `cancel()` does not stop jobs. A `Batchable` job reads `cancelled` and skips its work.
 - An empty batch throws `ArgumentError`. `add(jobs)` on a finished or cancelled batch throws `StateError`.
-- A chain inside a batch is not supported. Batches do not use `afterCommit`.
 - `dart run bin/queue.dart prune-batches --hours=48` deletes old finished batches. `--unfinished=168` also deletes batches that never finished.
 - `Queue.fake()` keeps batches in `batches`. Check with `assertBatched()` and `assertBatchCount(n)`.
+
+### A chain inside a batch
+
+```dart
+await Queue.batch(<DoxJob>[ImportUsers()])
+    .chain(<DoxJob>[ImportOrders(), SumOrders()])
+    .dispatch();
+```
+
+- The chain counts as one job of the batch. It is done when its last job is done.
+- When a job of the chain fails for good, the rest of the chain is dropped and the batch counts one failed job. `allowFailures()` and `catchError()` work as for any job.
+- `add(jobs)` takes jobs only, not chains.
+
+### After the commit
+
+```dart
+await QueryBuilder.transaction(() async {
+  Order order = await Order().create(data);
+  await Queue.batch(<DoxJob>[ChargeOrder(id: order.id)])
+      .chain(<DoxJob>[PackOrder(id: order.id), ShipOrder(id: order.id)])
+      .dispatch(afterCommit: true);
+});
+```
+
+The batch row and its jobs wait for the commit. A rollback drops them. `Queue.chain(jobs).dispatch(afterCommit: true)` works the same. Before the commit the returned `Batch` is not saved yet.
+
+### Batch events
+
+```dart
+Queue.batchProgress((QueueEvent event) => print('${event.batch!.progress}%'));
+Queue.batchFailed((QueueEvent event) => alert(event.batch!.id, event.error));
+```
+
+Also `Queue.batchDispatched`, `Queue.batchCancelled` and `Queue.batchFinished`. Each fires once. A failure without `allowFailures()` fires `batchFailed`, then `batchCancelled`.
+- Test: `queue.assertBatchedChain([ImportOrders, SumOrders])`.

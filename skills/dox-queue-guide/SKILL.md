@@ -155,6 +155,8 @@ await QueryBuilder.transaction(() async {
 });
 ```
 
+Chains and batches take it too: `Queue.batch(jobs).dispatch(afterCommit: true)` saves and pushes the batch after the commit. A rollback drops it.
+
 To queue an email with no job class, use `Mail.queue(message)` and `Mail.later(Duration(minutes: 10), message)` from dox_mailer.
 
 ### 3. Run the worker
