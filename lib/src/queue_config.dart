@@ -110,8 +110,8 @@ class QueueConfig {
   /// Opt-in: the default of `dispatch(afterCommit:)` for every dispatch.
   /// True: a job dispatched inside a transaction of the default dox_orm
   /// connection is pushed only after that transaction commits, and a rollback
-  /// drops it. False (the default): the job is pushed at once. Only the main config counts,
-  /// not the entries of [connections].
+  /// drops it. False (the default): the job is pushed at once. Only the main
+  /// config counts, not the entries of [connections].
   final bool afterCommit;
 
   /// Opt-in, for the `database` driver: `failed_jobs.failed_at` is a
