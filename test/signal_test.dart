@@ -68,4 +68,46 @@ void main() {
     await SqlQueryBuilder.close();
     dir.deleteSync(recursive: true);
   }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test(
+    'SIGTERM stops the worker when Redis is down',
+    () async {
+      // a port where nothing listens
+      ServerSocket socket = await ServerSocket.bind('127.0.0.1', 0);
+      int port = socket.port;
+      await socket.close();
+      Process process = await Process.start(
+        Platform.resolvedExecutable,
+        <String>['run', 'test/fixtures/worker_main.dart', 'none', 'work'],
+        environment: <String, String>{'DOWN_REDIS_PORT': '$port'},
+      );
+      StringBuffer out = StringBuffer();
+      Completer<void> started = Completer<void>();
+      void listen(String text) {
+        out.write(text);
+        if (text.contains('worker started') && !started.isCompleted) {
+          started.complete();
+        }
+      }
+
+      process.stdout.transform(utf8.decoder).listen(listen);
+      process.stderr.transform(utf8.decoder).listen(listen);
+      try {
+        await started.future.timeout(const Duration(seconds: 60));
+        // let the first pop start
+        await Future<void>.delayed(const Duration(seconds: 1));
+        // SIGTERM
+        process.kill();
+        // the grace is 5 seconds
+        int code = await process.exitCode.timeout(const Duration(seconds: 15));
+        expect(code, 0, reason: out.toString());
+      } catch (_) {
+        process.kill(ProcessSignal.sigkill);
+        stderr.writeln(out);
+        rethrow;
+      }
+    },
+    skip: Platform.isWindows ? 'no SIGTERM on Windows' : false,
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
 }

@@ -86,13 +86,32 @@ class Worker {
     required this.driver,
     required this.jobs,
     this.options = const WorkerOptions(),
+    this.popStopGrace = defaultPopStopGrace,
   });
+
+  /// How long a pop that is already running may take after [stop]. If it
+  /// returns a job in this time, the job runs. After it, [run] stops
+  /// waiting for the pop, so a stuck pop (eg. Redis is down) can not hold
+  /// the worker.
+  static const Duration defaultPopStopGrace = Duration(seconds: 5);
 
   final QueueDriver driver;
   final JobRegistry jobs;
   final WorkerOptions options;
 
+  /// the grace of [defaultPopStopGrace], set here to make tests fast
+  final Duration popStopGrace;
+
   bool _stopping = false;
+
+  /// true when [run] is over, so a late [stop] starts no timer
+  bool _runEnded = false;
+
+  /// the pops that run now, one completer for each
+  final Set<Completer<ReservedJob?>> _waiting = <Completer<ReservedJob?>>{};
+
+  /// ends the wait for the running pops, started by the first [stop]
+  Timer? _graceTimer;
 
   /// completes on [stop], to end a sleep early
   final Completer<void> _wake = Completer<void>();
@@ -107,8 +126,15 @@ class Worker {
     int loops = options.once ? 1 : options.concurrency;
     Duration? maxTime = options.maxTime;
     Timer? timer = maxTime == null ? null : Timer(maxTime, _timeIsUp);
-    await Future.wait(<Future<void>>[for (int i = 0; i < loops; i++) _loop()]);
-    timer?.cancel();
+    try {
+      await Future.wait(<Future<void>>[
+        for (int i = 0; i < loops; i++) _loop(),
+      ]);
+    } finally {
+      _runEnded = true;
+      timer?.cancel();
+      _graceTimer?.cancel();
+    }
     await const QueueEvent(QueueEventType.stopping).fire();
   }
 
@@ -121,20 +147,32 @@ class Worker {
   void stop() {
     _stopping = true;
     if (!_wake.isCompleted) _wake.complete();
+    if (!_runEnded) _graceTimer ??= Timer(popStopGrace, _giveUpWaiting);
+  }
+
+  /// A job reserved after this comes back after the retryAfter time of
+  /// the driver, with one more attempt.
+  void _giveUpWaiting() {
+    for (Completer<ReservedJob?> waiting in _waiting.toList()) {
+      if (!waiting.isCompleted) waiting.complete(null);
+    }
+    _waiting.clear();
   }
 
   Future<void> _loop() async {
     while (!_stopping) {
       await const QueueEvent(QueueEventType.looping).fire();
+      if (_stopping) return;
       ReservedJob? job;
       try {
-        job = await _next();
+        job = await _nextOrStop();
       } catch (error, stack) {
         QueueLog.danger('Queue: can not take a job: $error', '$stack');
         await _pause(options.sleep);
         continue;
       }
       if (job == null) {
+        if (_stopping) return;
         if (options.stopWhenEmpty || options.once) return;
         await _pause(options.sleep);
         continue;
@@ -164,8 +202,54 @@ class Worker {
     }
   }
 
+  /// Like [_next], but gives null when the grace after [stop] is over.
+  /// A pop can hang for ever (eg. Redis is down), so the loop must not
+  /// wait for it. Each pop has its own completer, so no listener stays on
+  /// a shared long-lived future.
+  Future<ReservedJob?> _nextOrStop() {
+    Completer<ReservedJob?> waiting = Completer<ReservedJob?>();
+    _waiting.add(waiting);
+    _popInto(waiting);
+    return waiting.future;
+  }
+
+  Future<void> _popInto(Completer<ReservedJob?> waiting) async {
+    try {
+      ReservedJob? job = await _next();
+      if (!waiting.isCompleted) {
+        waiting.complete(job);
+      } else if (job != null) {
+        await _giveBack(job);
+      }
+    } catch (error, stack) {
+      if (!waiting.isCompleted) waiting.completeError(error, stack);
+    } finally {
+      _waiting.remove(waiting);
+    }
+  }
+
+  /// The pop was given up after the grace, and then it returned a job.
+  /// Nobody runs it, so put it back on the queue at once. The pop already
+  /// counted one attempt, but the job did not run. So it goes back with
+  /// one attempt less, and it runs normally later.
+  /// The driver may be closed by now, so errors are ignored.
+  Future<void> _giveBack(ReservedJob job) async {
+    int attempts = job.attempts - 1;
+    ReservedJob uncounted = ReservedJob(
+      job.payload.withAttempts(attempts),
+      attempts: attempts,
+      ref: job.ref,
+    );
+    try {
+      await driver.release(uncounted, Duration.zero);
+    } catch (_) {
+      // the reservation of the driver ends by itself (retryAfter)
+    }
+  }
+
   Future<ReservedJob?> _next() async {
     for (String queue in options.queues) {
+      if (_stopping) return null;
       ReservedJob? job = await driver.pop(queue);
       if (job != null) return job;
     }

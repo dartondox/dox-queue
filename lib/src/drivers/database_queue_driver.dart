@@ -142,9 +142,10 @@ class DatabaseQueueDriver extends QueueDriver {
   Future<void> release(ReservedJob job, Duration delay) async {
     await _db.execute(
       'UPDATE $jobsTable SET reserved_at = NULL, available_at = @at, '
-      'payload = @payload WHERE id = @id',
+      'attempts = @attempts, payload = @payload WHERE id = @id',
       substitutionValues: <String, dynamic>{
         'at': QueueDriver.now() + delay.inMilliseconds,
+        'attempts': job.attempts,
         'payload': job.payload.encode(),
         'id': job.ref,
       },
