@@ -104,6 +104,9 @@ class Worker {
 
   bool _stopping = false;
 
+  /// true when [run] is over, so a late [stop] starts no timer
+  bool _runEnded = false;
+
   /// the pops that run now, one completer for each
   final Set<Completer<ReservedJob?>> _waiting = <Completer<ReservedJob?>>{};
 
@@ -123,9 +126,15 @@ class Worker {
     int loops = options.once ? 1 : options.concurrency;
     Duration? maxTime = options.maxTime;
     Timer? timer = maxTime == null ? null : Timer(maxTime, _timeIsUp);
-    await Future.wait(<Future<void>>[for (int i = 0; i < loops; i++) _loop()]);
-    timer?.cancel();
-    _graceTimer?.cancel();
+    try {
+      await Future.wait(<Future<void>>[
+        for (int i = 0; i < loops; i++) _loop(),
+      ]);
+    } finally {
+      _runEnded = true;
+      timer?.cancel();
+      _graceTimer?.cancel();
+    }
     await const QueueEvent(QueueEventType.stopping).fire();
   }
 
@@ -138,7 +147,7 @@ class Worker {
   void stop() {
     _stopping = true;
     if (!_wake.isCompleted) _wake.complete();
-    _graceTimer ??= Timer(popStopGrace, _giveUpWaiting);
+    if (!_runEnded) _graceTimer ??= Timer(popStopGrace, _giveUpWaiting);
   }
 
   /// A job reserved after this comes back after the retryAfter time of
@@ -207,11 +216,28 @@ class Worker {
   Future<void> _popInto(Completer<ReservedJob?> waiting) async {
     try {
       ReservedJob? job = await _next();
-      if (!waiting.isCompleted) waiting.complete(job);
+      if (!waiting.isCompleted) {
+        waiting.complete(job);
+      } else if (job != null) {
+        await _giveBack(job);
+      }
     } catch (error, stack) {
       if (!waiting.isCompleted) waiting.completeError(error, stack);
     } finally {
       _waiting.remove(waiting);
+    }
+  }
+
+  /// The pop was given up after the grace, and then it returned a job.
+  /// Nobody runs it, so put it back on the queue at once. The pop already
+  /// counted one attempt, and release keeps it (the same as a normal
+  /// release), so the job has one less try. This is the best we can do.
+  /// The driver may be closed by now, so errors are ignored.
+  Future<void> _giveBack(ReservedJob job) async {
+    try {
+      await driver.release(job, Duration.zero);
+    } catch (_) {
+      // the reservation of the driver ends by itself (retryAfter)
     }
   }
 
