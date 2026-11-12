@@ -91,9 +91,8 @@ class QueueConfig {
   /// False (the default): the job object runs as it is.
   final bool serializeSync;
 
-  /// Opt-in: more queue connections, by name, like Laravel
-  /// `connections`. This config is the main connection: it is used when
-  /// no connection is named. Pick another one with
+  /// Opt-in: more queue connections, by name. This config is the main
+  /// connection: it is used when no connection is named. Pick another one with
   /// `dispatch(connection: 'database')` and the worker flag
   /// `--connection=database`.
   ///
@@ -108,16 +107,15 @@ class QueueConfig {
   /// jobs of the table.
   final Map<String, QueueConfig> connections;
 
-  /// Opt-in: the default of `dispatch(afterCommit:)` for every dispatch,
-  /// like Laravel `after_commit`. True: a job dispatched inside a
-  /// transaction of the default dox_orm connection is pushed only after
-  /// that transaction commits, and a rollback drops it. False (the
-  /// default): the job is pushed at once. Only the main config counts,
-  /// not the entries of [connections].
+  /// Opt-in: the default of `dispatch(afterCommit:)` for every dispatch.
+  /// True: a job dispatched inside a transaction of the default dox_orm
+  /// connection is pushed only after that transaction commits, and a rollback
+  /// drops it. False (the default): the job is pushed at once. Only the main
+  /// config counts, not the entries of [connections].
   final bool afterCommit;
 
   /// Opt-in, for the `database` driver: `failed_jobs.failed_at` is a
-  /// timestamp column in UTC, like Laravel. False (the default): it is
+  /// timestamp column in UTC. False (the default): it is
   /// a big integer, unix time in milliseconds. It must match the table:
   /// make the table with `QueueTables.up(schema, failedAtTimestamp:
   /// true)`. The driver checks the column once, on the first use of

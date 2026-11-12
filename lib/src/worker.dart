@@ -302,7 +302,7 @@ class Worker {
   /// The job ended: push the next job of its chain, delete it, free its
   /// unique lock and count it in its batch. False when the push of the
   /// next job threw: then the try counts as failed, so the push is tried
-  /// again with the job (like Laravel, the job runs again).
+  /// again with the job (the job runs again).
   Future<bool> _finish(ReservedJob reserved, DoxJob job, String label) async {
     JobPayload payload = reserved.payload;
     if (payload.chain?.isNotEmpty ?? false) {

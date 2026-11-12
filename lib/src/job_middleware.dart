@@ -9,7 +9,7 @@ import 'queue_driver.dart';
 /// Runs the rest of the middleware, then `handle()` of the job.
 typedef JobNext = Future<void> Function();
 
-/// Wraps `handle()` of a job, like Laravel job middleware. A job gives
+/// Wraps `handle()` of a job. A job gives
 /// its list with the [HasMiddleware] mixin. The first one runs first.
 ///
 /// A middleware calls [next] to go on. It can skip the job (it does not
@@ -45,9 +45,9 @@ abstract class JobMiddleware {
   }
 }
 
-/// Lets a job run at most [max] times [per] time window, like Laravel
-/// `RateLimited`. Over the limit, the job goes back on the queue until
-/// the window ends. Every job with the same [key] shares the limit.
+/// Lets a job run at most [max] times [per] time window. Over the limit, the
+/// job goes back on the queue until the window ends. Every job with the same
+/// [key] shares the limit.
 ///
 /// The count is kept in the default cache store of the app (`Cache()`),
 /// so every worker that uses the same store shares it. Use a `redis` (or
@@ -77,16 +77,15 @@ class RateLimited extends JobMiddleware {
   }
 }
 
-/// Lets only one job with the same [key] run at a time, like Laravel
-/// `WithoutOverlapping`. When another one runs, the job goes back on the
-/// queue after [releaseAfter]. Null [releaseAfter]: the job is dropped
-/// (deleted) instead.
+/// Lets only one job with the same [key] run at a time. When another one runs,
+/// the job goes back on the queue after [releaseAfter]. Null [releaseAfter]:
+/// the job is dropped (deleted) instead.
 ///
 /// [expireAfter] frees the lock after this time, in case a worker
 /// crashed while it held it. Null: the lock is only freed when the job
 /// ends. It uses a lock of the default cache store, see [RateLimited].
 ///
-/// Unlike Laravel, the class name is not part of the lock: all job
+/// The class name is not part of the lock: all job
 /// classes with the same [key] share it. Put the class name in [key] when
 /// they should not.
 class WithoutOverlapping extends JobMiddleware {
@@ -116,10 +115,9 @@ class WithoutOverlapping extends JobMiddleware {
   }
 }
 
-/// After [maxAttempts] errors of jobs with the same [key] in [decay]
-/// time, stop running them until [decay] is over, like Laravel
-/// `ThrottlesExceptions`. Use it for a service that is down: the jobs
-/// wait instead of failing at once.
+/// After [maxAttempts] errors of jobs with the same [key] in [decay] time, stop
+/// running them until [decay] is over. Use it for a service that is down: the
+/// jobs wait instead of failing at once.
 ///
 /// When `handle()` throws, the job goes back on the queue after
 /// [retryAfter] and the error is logged. Over the limit, the job goes
@@ -167,7 +165,7 @@ class ThrottlesExceptions extends JobMiddleware {
   }
 }
 
-/// A hit counter in the cache, like the Laravel `RateLimiter`. The count
+/// A hit counter in the cache. The count
 /// lives for one window. `<name>:timer` keeps the time the window ends.
 class _Limiter {
   /// count one hit and return the count of this window

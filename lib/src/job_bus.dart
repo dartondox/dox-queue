@@ -40,8 +40,8 @@ class PendingChain {
   /// the job of [catchError], or null
   DoxJob? catchJob;
 
-  /// Run [job] when a job of the chain fails for good, like Laravel
-  /// `catch()`. It runs once, in the process where the job failed, with
+  /// Run [job] when a job of the chain fails for good.
+  /// It runs once, in the process where the job failed, with
   /// no retry. Add [CatchesError] to it to read the error.
   PendingChain catchError(DoxJob job) {
     catchJob = job;
@@ -228,7 +228,7 @@ class JobBus {
 /// the batch id of each job of a batch, see [Batchable]
 final Expando<String> _batchIds = Expando<String>('dox_queue batch id');
 
-/// Opt-in, for a job of a batch, like Laravel `Batchable`: [batchId]
+/// Opt-in, for a job of a batch: [batchId]
 /// and [batch]. A job can skip its work when the batch was cancelled:
 /// ```
 /// @Job()
@@ -328,8 +328,7 @@ class PendingBatch {
     return this;
   }
 
-  /// Run [job] once, when every job of the batch ran: done or failed,
-  /// like Laravel `finally()`.
+  /// Run [job] once, when every job of the batch ran: done or failed.
   PendingBatch whenComplete(DoxJob job) {
     completeJob = job;
     return this;
@@ -426,7 +425,7 @@ class Batch {
   final int totalJobs;
 
   /// The jobs that are not done yet. A failed job counts here too, as
-  /// it can be retried, like Laravel.
+  /// it can be retried.
   final int pendingJobs;
 
   /// the jobs that failed for good
