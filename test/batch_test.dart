@@ -575,6 +575,156 @@ void main() {
     });
   });
 
+  group('afterCommit on sqlite', () {
+    // the transactions run on the default dox_orm connection: sqlite
+    Future<void> useQueue({bool afterCommit = false}) async {
+      await testStores.first.reset();
+      await resetBatches('sqlite');
+      Queue.configure(
+        QueueConfig(
+          driver: 'database',
+          jobs: registry,
+          connection: 'sqlite',
+          afterCommit: afterCommit,
+        ),
+      );
+    }
+
+    tearDown(Queue.close);
+
+    Future<int> queued() async {
+      int count = 0;
+      while (await Queue.driver.pop('default') != null) {
+        count++;
+      }
+      return count;
+    }
+
+    test('a batch is saved and pushed after the commit', () async {
+      await useQueue();
+      Batch? inside;
+      Batch batch = await QueryBuilder.transaction(() async {
+        Batch batch = await batchOf(<DoxJob>[BatchStep('a')])
+            .chain(<DoxJob>[BatchStep('b')])
+            .name('ev')
+            .dispatch(afterCommit: true);
+        inside = await Queue.findBatch(batch.id);
+        expect(await Queue.driver.pop('default'), isNull);
+        expect(calls, isEmpty);
+        expect(events, isEmpty);
+        return batch;
+      });
+      expect(inside, isNull);
+      expect(batch.totalJobs, 2);
+      expect(batch.finished, isFalse);
+      Batch? saved = await Queue.findBatch(batch.id);
+      expect(saved?.name, 'ev');
+      expect(saved?.totalJobs, 2);
+      expect(calls, <String>['before']);
+      expect(events, <String>['batchDispatched ev 0/2 f0']);
+      expect(await queued(), 2);
+    });
+
+    test('a rollback drops the batch', () async {
+      await useQueue();
+      String? id;
+      await expectLater(
+        QueryBuilder.transaction(() async {
+          Batch batch = await batchOf(<DoxJob>[BatchStep('a')])
+              .dispatch(afterCommit: true);
+          id = batch.id;
+          throw StateError('stop');
+        }),
+        throwsStateError,
+      );
+      expect(await Queue.findBatch(id!), isNull);
+      expect(await queued(), 0);
+      expect(calls, isEmpty);
+      expect(events, isEmpty);
+    });
+
+    test('outside a transaction it is saved at once', () async {
+      await useQueue();
+      Batch batch = await Queue.batch(<DoxJob>[BatchStep('a')])
+          .dispatch(afterCommit: true);
+      expect(await Queue.findBatch(batch.id), isNotNull);
+      expect(await queued(), 1);
+    });
+
+    test('the setting turns it on, false wins over it', () async {
+      await useQueue(afterCommit: true);
+      await QueryBuilder.transaction(() async {
+        await Queue.batch(<DoxJob>[BatchStep('a')]).dispatch();
+        expect(await Queue.driver.pop('default'), isNull);
+        await Queue.batch(<DoxJob>[BatchStep('b')])
+            .dispatch(afterCommit: false);
+        expect(await Queue.driver.pop('default'), isNotNull);
+      });
+      expect(await queued(), 1);
+    });
+
+    test('a chain is pushed after the commit, dropped on rollback', () async {
+      await useQueue();
+      await QueryBuilder.transaction(() async {
+        await Queue.chain(<DoxJob>[BatchStep('a'), BatchStep('b')])
+            .dispatch(afterCommit: true);
+        expect(await Queue.driver.pop('default'), isNull);
+      });
+      ReservedJob? first = await Queue.driver.pop('default');
+      expect(first?.payload.chain, hasLength(1));
+      await expectLater(
+        QueryBuilder.transaction(() async {
+          await Queue.chain(<DoxJob>[BatchStep('c')])
+              .dispatch(afterCommit: true);
+          throw StateError('stop');
+        }),
+        throwsStateError,
+      );
+      expect(await queued(), 0);
+    });
+  });
+
+  group('afterCommit with the sync driver', () {
+    setUp(() async {
+      await resetBatches(null);
+      Queue.configure(QueueConfig(jobs: registry));
+    });
+
+    test('a batch runs after the commit', () async {
+      await QueryBuilder.transaction(() async {
+        Batch batch = await Queue.batch(<DoxJob>[BatchStep('a')])
+            .chain(<DoxJob>[BatchStep('b'), BatchStep('c')])
+            .dispatch(afterCommit: true);
+        expect(batch.pendingJobs, 2);
+        expect(JobLog.handled, isEmpty);
+      });
+      expect(JobLog.handled, <String>['a', 'b', 'c']);
+    });
+
+    test('a chain runs after the commit, in order', () async {
+      await QueryBuilder.transaction(() async {
+        await Queue.chain(<DoxJob>[BatchStep('a'), BatchStep('b')])
+            .dispatch(afterCommit: true);
+        expect(JobLog.handled, isEmpty);
+      });
+      expect(JobLog.handled, <String>['a', 'b']);
+    });
+
+    test('a rollback runs nothing', () async {
+      await expectLater(
+        QueryBuilder.transaction(() async {
+          await Queue.batch(<DoxJob>[BatchStep('a')])
+              .dispatch(afterCommit: true);
+          await Queue.chain(<DoxJob>[BatchStep('b')])
+              .dispatch(afterCommit: true);
+          throw StateError('stop');
+        }),
+        throwsStateError,
+      );
+      expect(JobLog.handled, isEmpty);
+    });
+  });
+
   group('batches on sqlite, errors', () {
     setUp(() async {
       await testStores.first.reset();
@@ -762,6 +912,11 @@ void main() {
           .dispatch();
       expect(batch.totalJobs, 2);
       fake.assertBatchedChain(<Type>[BatchStep, Callback]);
+      // the fake keeps it at dispatch, also with afterCommit
+      await QueryBuilder.transaction(() async {
+        await Queue.batch(<DoxJob>[BatchStep('c')]).dispatch(afterCommit: true);
+      });
+      fake.assertBatchCount(2);
       fake.assertBatched((PendingBatch batch) => batch.chains.length == 1);
       fake.assertNothingPushed();
       expect(

@@ -332,6 +332,7 @@ await QueryBuilder.transaction(() async {
 - The `sync` driver runs the job after the commit.
 - It waits only for a transaction on the default dox_orm connection, opened with no `connection:` name. A transaction opened by name pushes the job at once, also when the name is the one of the default connection.
 - `dispatchIf()`, `dispatchUnless()` and `Queue.dispatch()` take `afterCommit` too.
+- Chains and batches take it too: `Queue.chain(jobs).dispatch(afterCommit: true)` and `Queue.batch(jobs).dispatch(afterCommit: true)`. A batch saves its `job_batches` row and pushes its jobs after the commit. A rollback drops it all. Before the commit, the returned `Batch` is not saved yet: it has the id and the counts of a new batch. A sync chain gives a new id before the commit, as its ids are made when it runs.
 - `dispatchSync()` and `dispatchAfterResponse()` run the job as before. They do not wait for a commit.
 
 Turn it on for every dispatch with `QueueConfig(afterCommit: true)`.
@@ -762,7 +763,7 @@ await Queue.batch(<DoxJob>[ImportUsers()])
 - The counts follow the at-least-once rule of the queue. A job that runs twice (eg. it ran longer than `retryAfter`, or a worker crashed in the middle of a fail) can be counted twice. `failedJobs` never goes below 0.
 - The batch is marked finished before `then` and `whenComplete` run, so `add()` from a callback (or from another process at that time) throws a `StateError`.
 - A worker that crashes after a job is done, and before it counted it, leaves the batch with that job pending. Then `then` and `whenComplete` never run. `prune-batches --unfinished=N` deletes such batches.
-- Batches do not use `afterCommit`: the batch is saved and its jobs are pushed at once.
+- Inside a transaction, use `dispatch(afterCommit: true)`, so the batch is saved and pushed only after the commit. See [Dispatch after the commit](#dispatch-after-the-commit).
 - The `sync` driver runs the jobs at `dispatch()`, one after the other, and counts them. A job that throws counts as failed: `dispatch()` does not throw. The table is still needed.
 - `Queue.fake()` keeps the batch in `batches`, and saves and runs nothing. Its jobs are not in `pushed`. `add()` adds to the faked batch, `cancel()` does nothing, and `Queue.findBatch()` gives null.
 - The queue events fire for the jobs of a batch like for any job. The batch has its own events, see [Batch events](#batch-events).

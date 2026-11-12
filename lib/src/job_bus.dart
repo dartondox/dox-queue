@@ -54,10 +54,16 @@ class PendingChain {
   ///
   /// When the first job is a [ShouldBeUnique] job that is skipped, the
   /// id is empty (`''`) and nothing runs.
+  ///
+  /// Opt-in [afterCommit]: inside a transaction of the default dox_orm
+  /// connection, the first job is pushed (with `sync`: the chain runs)
+  /// only after the commit. A rollback drops the chain. The same rule as
+  /// `Queue.dispatch()`, also for null: [QueueConfig.afterCommit].
   Future<String> dispatch({
     Duration? delay,
     String? queue,
     String? connection,
+    bool? afterCommit,
   }) async {
     QueueFake? fake = Queue._fake;
     if (fake != null) {
@@ -66,6 +72,15 @@ class PendingChain {
     }
     QueueConfig config = Queue.config;
     if (config.connectionOf(connection).driver == 'sync') {
+      if ((afterCommit ?? config.afterCommit) && DBDriver.inTransaction) {
+        String? first;
+        await QueryBuilder.afterCommit(() async {
+          first = await _runNow(queue, connection);
+        });
+        // ponytail: the ids of a sync chain are made when it runs. Before
+        // the commit there is none yet, so it gives a new id.
+        return first ?? JobPayload.newId();
+      }
       return _runNow(queue, connection);
     }
     JobRegistry registry = config.jobs;
@@ -80,6 +95,7 @@ class PendingChain {
       connection: connection,
       chain: rest.isEmpty ? null : rest,
       chainCatch: onError == null ? null : Queue._item(onError, null, registry),
+      afterCommit: afterCommit,
     );
   }
 
@@ -90,7 +106,12 @@ class PendingChain {
     for (DoxJob job in jobs) {
       String id;
       try {
-        id = await Queue.dispatch(job, queue: queue, connection: connection);
+        id = await Queue.dispatch(
+          job,
+          queue: queue,
+          connection: connection,
+          afterCommit: false,
+        );
       } catch (error) {
         await Queue._callback(catchJob, error: error);
         rethrow;
@@ -384,7 +405,18 @@ class PendingBatch {
   /// Save the batch, push its jobs and return the batch. [queue] and
   /// [connection] count for every job, also for jobs of `Batch.add()`.
   /// With the `sync` driver the jobs run now, one after the other.
-  Future<Batch> dispatch({String? queue, String? connection}) async {
+  ///
+  /// Opt-in [afterCommit]: inside a transaction of the default dox_orm
+  /// connection, the batch is saved and its jobs are pushed only after
+  /// the commit. A rollback drops it all. Outside a transaction it
+  /// happens at once. The same rule as `Queue.dispatch()`, also for null:
+  /// [QueueConfig.afterCommit]. Before the commit, the returned batch is
+  /// not saved yet: it has the id and the counts of a new batch.
+  Future<Batch> dispatch({
+    String? queue,
+    String? connection,
+    bool? afterCommit,
+  }) async {
     String id = JobPayload.newId();
     List<List<DoxJob>> units = _units;
     QueueFake? fake = Queue._fake;
@@ -420,6 +452,37 @@ class PendingBatch {
       'catch': ?item(catchJob),
       'finally': ?item(completeJob),
     };
+    if ((afterCommit ?? config.afterCommit) && DBDriver.inTransaction) {
+      Batch? saved;
+      await QueryBuilder.afterCommit(() async {
+        saved = await _save(id, units, payloads, options, queue, connection);
+      });
+      return saved ??
+          Batch._(
+            id,
+            batchName,
+            units.length,
+            units.length,
+            0,
+            DateTime.now(),
+            null,
+            null,
+            options,
+            null,
+          );
+    }
+    return _save(id, units, payloads, options, queue, connection);
+  }
+
+  /// save the batch [id], push its [units] and return the batch
+  Future<Batch> _save(
+    String id,
+    List<List<DoxJob>> units,
+    List<JobPayload> payloads,
+    Map<String, Object?> options,
+    String? queue,
+    String? connection,
+  ) async {
     int now = QueueDriver.now();
     try {
       await Batch._db.execute(
@@ -458,7 +521,14 @@ class PendingBatch {
       ),
     ).fire();
     await Queue._callback(beforeJob, batch: id);
-    await Batch._push(id, units, payloads, queue, connection, registry);
+    await Batch._push(
+      id,
+      units,
+      payloads,
+      queue,
+      connection,
+      Queue.config.jobs,
+    );
     return (await Queue.findBatch(id))!;
   }
 }

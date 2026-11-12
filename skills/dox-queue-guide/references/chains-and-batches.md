@@ -98,6 +98,19 @@ await Queue.batch(<DoxJob>[ImportUsers()])
 - When a job of the chain fails for good, the rest of the chain is dropped and the batch counts one failed job. `allowFailures()` and `catchError()` work as for any job.
 - `add(jobs)` takes jobs only, not chains.
 
+### After the commit
+
+```dart
+await QueryBuilder.transaction(() async {
+  Order order = await Order().create(data);
+  await Queue.batch(<DoxJob>[ChargeOrder(id: order.id)])
+      .chain(<DoxJob>[PackOrder(id: order.id), ShipOrder(id: order.id)])
+      .dispatch(afterCommit: true);
+});
+```
+
+The batch row and its jobs wait for the commit. A rollback drops them. `Queue.chain(jobs).dispatch(afterCommit: true)` works the same. Before the commit the returned `Batch` is not saved yet.
+
 ### Batch events
 
 ```dart
