@@ -11,7 +11,7 @@ The `dox_queue` package gives you jobs, two drivers (Redis and sync), retries, d
 dart pub add dox_queue
 ```
 
-`dox_queue` has a builder. Your app already runs `build_runner` for `dox_builder`, so nothing else is needed.
+The job builder is in `dox_builder`. Your app already runs `build_runner` with it, so nothing else is needed.
 
 ## How it works
 
@@ -99,22 +99,15 @@ The database driver, [job batches](#job-batches) and `afterCommit` live in the `
 dart pub add dox_queue_database
 ```
 
-Turn them on in your queue provider, before `super.setup()`:
+Make your queue provider extend `DatabaseQueueProvider` in place of `QueueProvider`. It turns them on:
 
 ```dart
-import 'package:dox_queue/dox_queue.dart';
 import 'package:dox_queue_database/dox_queue_database.dart';
 
 import '../config/queue.dart';
 
-class AppQueueProvider extends QueueProvider {
+class AppQueueProvider extends DatabaseQueueProvider {
   AppQueueProvider() : super(queueConfig);
-
-  @override
-  Future<void> setup() async {
-    QueueDatabase.register();
-    await super.setup();
-  }
 }
 ```
 
@@ -471,26 +464,19 @@ The database driver, the batch store and `afterCommit` are in the [dox_queue_dat
 dart pub add dox_queue_database
 ```
 
-Register it in your queue provider, before `super.setup()`:
+Make your queue provider extend `DatabaseQueueProvider` in place of `QueueProvider`. It turns them on:
 
 ```dart
-import 'package:dox_queue/dox_queue.dart';
 import 'package:dox_queue_database/dox_queue_database.dart';
 
 import '../config/queue.dart';
 
-class AppQueueProvider extends QueueProvider {
+class AppQueueProvider extends DatabaseQueueProvider {
   AppQueueProvider() : super(queueConfig);
-
-  @override
-  Future<void> setup() async {
-    QueueDatabase.register();
-    await super.setup();
-  }
 }
 ```
 
-Then run `dox queue:table` and `dox migrate`. Without `QueueDatabase.register()`, `QueueConfig(driver: 'database')` throws an `ArgumentError` that names the package.
+Then run `dox queue:table` and `dox migrate`. Without it, `QueueConfig(driver: 'database')` throws an `ArgumentError` that names the package.
 
 ### Redis
 

@@ -28,29 +28,25 @@ The migration calls `QueueTables.up(schema)` and
 
 ## Register it
 
-Call `QueueDatabase.register()` in your queue provider, before
-`super.setup()`:
+Make your queue provider extend `DatabaseQueueProvider` in place of
+`QueueProvider`:
 
 ```dart
-import 'package:dox_queue/dox_queue.dart';
 import 'package:dox_queue_database/dox_queue_database.dart';
 
-class AppQueueProvider extends QueueProvider {
+class AppQueueProvider extends DatabaseQueueProvider {
   AppQueueProvider() : super(queueConfig);
-
-  @override
-  Future<void> setup() async {
-    QueueDatabase.register();
-    await super.setup();
-  }
 }
 ```
 
-This turns on all three in the isolate:
+It turns on all three in each isolate:
 
 - the `database` driver (`DatabaseQueueDriver`),
 - the batch store (`DatabaseBatchRepository`),
 - `afterCommit` on dox_orm transactions (`OrmTransactions`).
+
+In a custom setup with no providers, call `QueueDatabase.register()`
+yourself, before `Queue.configure()`.
 
 Then use the driver in the queue config:
 
@@ -94,8 +90,8 @@ give each one its own dox_orm connection.
 ## Batches
 
 `Queue.batch()` saves its batches in the `job_batches` table. This is also
-so with the Redis driver. Add this package and call
-`QueueDatabase.register()` for batches, also when your jobs run on Redis.
+so with the Redis driver. Add this package and extend
+`DatabaseQueueProvider` for batches, also when your jobs run on Redis.
 Without it, `Queue.batch()` throws a `StateError` that says to add
 `dox_queue_database`.
 
@@ -136,7 +132,7 @@ await QueryBuilder.transaction(() async {
 Only a transaction of the default dox_orm connection defers a job. A
 transaction on a named connection does not. The job is pushed at once.
 
-Without `QueueDatabase.register()`, a dispatch with `afterCommit` on throws
+Without it, a dispatch with `afterCommit` on throws
 a `StateError`.
 
 ## The failed_at column

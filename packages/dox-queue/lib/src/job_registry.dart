@@ -27,6 +27,8 @@ class JobRegistry {
   /// The jobs of Dox packages, eg. the job of `Mail.queue()` of
   /// dox_mailer. Every registry finds them after its own [codecs], so an
   /// app does not add them. A package adds its jobs with [addBuiltIn].
+  /// `jobs.g.dart` lists the mail jobs too, so a worker reads them before
+  /// `Mail.configure()` runs. Then the codec in [codecs] is found first.
   static List<JobCodec> get builtIn => List<JobCodec>.unmodifiable(_builtIn);
 
   static final List<JobCodec> _builtIn = <JobCodec>[];
