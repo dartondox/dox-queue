@@ -95,4 +95,23 @@ void main() {
     expect(factory.made, 1);
     expect(factory.driver.pops, 0);
   });
+
+  test('workInProcess with the database driver but no dox_queue_database '
+      'fails the start with a clear error', () async {
+    Dox().initialize(AppConfig(appKey: 'k' * 32, totalIsolate: 1));
+    QueueProvider provider = QueueProvider(
+      QueueConfig(driver: 'database', workInProcess: true),
+    );
+    await provider.setup();
+    await expectLater(
+      provider.boot(),
+      throwsA(
+        isA<ArgumentError>().having(
+          (ArgumentError e) => '${e.message}',
+          'message',
+          contains('dox_queue_database'),
+        ),
+      ),
+    );
+  });
 }
