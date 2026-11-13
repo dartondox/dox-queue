@@ -59,10 +59,21 @@ jobs:
       - run: ci/use-siblings.sh build
       # CI only: the sqlite3 hook uses the runner's SQLite, no download.
       - run: ci/system-sqlite.sh pubspec.yaml
+      # Pub workspace: one `dart pub get` at the root links all packages.
       - run: dart pub get
       - run: dart format --output=none --set-exit-if-changed .
-      - run: dart analyze --fatal-infos
-      - run: dart test
+      - run: dart analyze --fatal-infos packages
+      - name: Publish order
+        run: ci/publish-order.sh
+      - name: Check that all package versions match the root version
+        run: ci/check-versions.sh
+      - name: Test dox_queue
+        working-directory: packages/dox-queue
+        run: dart test
+      - name: Test dox_queue_database
+        working-directory: packages/dox-queue-database
+        run: dart test
       # Takes the CI-only hooks block out again. It must not be published.
       - run: git checkout pubspec.yaml
-      - run: dart pub publish --dry-run
+      - name: Dry run publish
+        run: ci/publish-dry-run.sh

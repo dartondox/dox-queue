@@ -1,0 +1,2 @@
+# the test files share one database and one Redis prefix, so run them one at a time
+concurrency: 1
