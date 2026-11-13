@@ -1,4 +1,4 @@
-## Unreleased
+## 3.2.0
 
 - New `dox queue:install [--driver=database|redis|sync]`, run by `dox add queue`. It writes `lib/config/queue.dart`, the provider, `bin/queue.dart` and a sample job, adds the `REDIS_*` keys for `redis`, and for `database` adds dox_queue_database and the `create_queue_tables` migration. It never overwrites a file. dox_queue now depends on `dox_annotation`.
 - Breaking: the builder that writes `lib/generated/jobs.g.dart` moved to dox_builder. So dox_queue no longer depends on `analyzer`, `build`, `dart_style` and `glob`. Use the dox_builder release that has the job builder, and run `build_runner` as before. The file and its `jobRegistry` stay the same. If your `build.yaml` names the builder `dox_queue:jobs`, change it to `dox_builder:jobs`.
