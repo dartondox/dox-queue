@@ -41,6 +41,7 @@ class QueueInstallCommand extends Command {
     }
     Installer installer = Installer(root: root, runner: runner);
     String app = installer.appName;
+    driver = _keptDriver(installer, driver);
 
     await installer.addDependency('dox_core');
     await installer.addDependency('dox_builder', dev: true);
@@ -93,6 +94,23 @@ class QueueInstallCommand extends Command {
     return drivers.contains(driver) ? driver : null;
   }
 
+  /// the driver of a `lib/config/queue.dart` that is already there, so a
+  /// second run with another `--driver` does not add the files and keys of
+  /// a driver that the config does not use. [driver] when there is no
+  /// config, or no driver in it.
+  String _keptDriver(Installer installer, String driver) {
+    File config = File('${installer.root.path}/lib/config/queue.dart');
+    if (!config.existsSync()) return driver;
+    RegExpMatch? kept = RegExp(r'''driver:\s*['"](\w+)['"]''')
+        .firstMatch(config.readAsStringSync());
+    if (kept == null || kept.group(1) == driver) return driver;
+    installer.note(
+      'skipped  driver: lib/config/queue.dart already exists, '
+      'set the driver there',
+    );
+    return drivers.contains(kept.group(1)) ? kept.group(1)! : driver;
+  }
+
   /// writes the migration of the jobs tables when the app has
   /// dox_migration. Returns true when the app has it.
   bool _addMigration(Installer installer) {
@@ -115,17 +133,32 @@ class QueueInstallCommand extends Command {
 
   /// `lib/config/queue.dart` for [driver]
   static String queueConfig(String app, String driver) {
-    String redis = driver == 'redis'
-        ? '''
+    if (driver != 'redis') {
+      return '''
+import 'package:dox_queue/dox_queue.dart';
+import 'package:$app/generated/jobs.g.dart';
 
-  /// The Redis server, from REDIS_URL or REDIS_HOST, REDIS_PORT,
-  /// REDIS_USERNAME, REDIS_PASSWORD and REDIS_TLS in .env.
-  redis: QueueConfig.redisFromEnv(),'''
-        : '';
+$_configDoc
+QueueConfig queueConfig = QueueConfig(driver: '$driver', jobs: jobRegistry);
+''';
+    }
     return '''
 import 'package:dox_queue/dox_queue.dart';
 import 'package:$app/generated/jobs.g.dart';
 
+$_configDoc
+QueueConfig queueConfig = QueueConfig(
+  driver: 'redis',
+  jobs: jobRegistry,
+
+  /// The Redis server, from REDIS_URL or REDIS_HOST, REDIS_PORT,
+  /// REDIS_USERNAME, REDIS_PASSWORD and REDIS_TLS in .env.
+  redis: QueueConfig.redisFromEnv(),
+);
+''';
+  }
+
+  static const String _configDoc = '''
 /// Queue settings
 /// -------------------------------
 /// `driver`: sync, database or redis. The database driver needs the
@@ -133,13 +166,7 @@ import 'package:$app/generated/jobs.g.dart';
 /// `jobs`: every @Job class, from lib/generated/jobs.g.dart.
 /// `inProcess`: true runs jobs inside the web server. Heavy jobs
 /// slow it down, so the default runs `dart run bin/queue.dart work`
-/// next to the server.
-QueueConfig queueConfig = QueueConfig(
-  driver: '$driver',
-  jobs: jobRegistry,$redis
-);
-''';
-  }
+/// next to the server.''';
 
   /// `lib/providers/queue_provider.dart` for [driver]
   static String queueProvider(String app, String driver) {

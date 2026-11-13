@@ -49,4 +49,17 @@ void main() {
     expect(folder.listSync(), hasLength(1));
     expect(exitCode, 1);
   });
+
+  test('queue:install has the same migration as queue:table', () {
+    /// the workspace path: the published package has no ../dox-queue
+    File install = File(
+      '../dox-queue/lib/src/commands/queue_install_command.dart',
+    );
+    expect(install.existsSync(), isTrue, reason: 'run from the package folder');
+    expect(
+      install.readAsStringSync(),
+      contains(QueueTableCommand.source),
+      reason: 'copy QueueTableCommand.source into queue:install again',
+    );
+  });
 }

@@ -159,4 +159,28 @@ void main() {
     expect(read('.env'), startsWith(env));
     expect(read('.env'), isNot(contains('REDIS_HOST=127')));
   });
+
+  test(
+    'a second run with another driver keeps the config and its keys',
+    () async {
+      await install(<String>['--driver=sync']);
+      Map<String, String> before = snapshot();
+      runner.calls.clear();
+      await install(<String>['--driver=redis']);
+      expect(snapshot(), before);
+      expect(runner.calls, isNot(contains('pub add dox_queue_database')));
+      expect(read('.env'), isNot(contains('REDIS')));
+      expect(read('lib/config/queue.dart'), contains("driver: 'sync'"));
+    },
+  );
+
+  test('the config has the line breaks of the template', () async {
+    await install(<String>['--driver=sync']);
+    expect(
+      read('lib/config/queue.dart'),
+      contains(
+        "\nQueueConfig queueConfig = QueueConfig(driver: 'sync', jobs: jobRegistry);\n",
+      ),
+    );
+  });
 }
