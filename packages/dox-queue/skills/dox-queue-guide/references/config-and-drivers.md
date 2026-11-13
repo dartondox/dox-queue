@@ -10,7 +10,7 @@
 | `prefix` | `dox_queue:` | start of every Redis key |
 | `connection` | default | dox_orm connection name, for dox_queue_database |
 | `retryAfter` | 90 seconds | a job not finished in this time can be taken by another worker |
-| `workInProcess` | `false` | run a worker inside the web server (small apps only) |
+| `inProcess` | `false` | run a worker inside the web server (small apps only) |
 | `workerQueues`, `workerConcurrency` | `['default']`, `1` | settings of that in-process worker |
 | `serializeSync` | `false` | `sync` driver saves and reloads the job before it runs |
 | `connections` | none | more queue connections by name |
@@ -63,7 +63,7 @@ An entry uses only `driver`, `redis`, `prefix`, `connection`, `retryAfter` and `
 
 ## Worker inside the web server
 
-`QueueConfig(driver: 'redis', jobs: jobRegistry, workInProcess: true)` runs jobs in the first isolate of the web server. Heavy jobs slow the API. Use a worker process for heavy or many jobs.
+`QueueConfig(driver: 'redis', jobs: jobRegistry, inProcess: true)` runs jobs in the first isolate of the web server. Heavy jobs slow the API. Use a worker process for heavy or many jobs.
 
 ## Queue events
 

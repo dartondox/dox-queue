@@ -189,7 +189,7 @@ A MySQL and MariaDB `TIMESTAMP` can not hold a time after 2038-01-19.
 **Stop all workers first, also on other servers.**
 A worker reads the column type when it first uses `failed_jobs`, and keeps it. A worker that is still running writes numbers into the timestamp column. On SQLite this works without an error, and then pruning and the order by time are wrong.
 
-1. Stop all workers, on every server. Stop the app too when it has `workInProcess: true`.
+1. Stop all workers, on every server. Stop the app too when it has `inProcess: true`.
 2. Run the SQL for your database below, in a new migration (`await schema.driver.execute('...');` for each line) or in a database client.
 3. Set `failedAtTimestamp: true` in the queue config.
 4. Start the workers again.

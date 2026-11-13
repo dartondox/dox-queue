@@ -34,7 +34,8 @@ class QueueConfig {
     this.prefix = 'dox_queue:',
     this.connection,
     this.retryAfter = const Duration(seconds: 90),
-    this.workInProcess = false,
+    bool? inProcess,
+    @Deprecated('Use inProcess') bool? workInProcess,
     this.workerQueues = const <String>['default'],
     this.workerConcurrency = 1,
     this.workerTimeoutGrace,
@@ -42,7 +43,7 @@ class QueueConfig {
     this.connections = const <String, QueueConfig>{},
     this.afterCommit = false,
     this.failedAtTimestamp = false,
-  });
+  }) : inProcess = inProcess ?? workInProcess ?? false;
 
   /// `sync`, `redis`, or a driver of `Queue.extend()`.
   /// - `sync`: `dispatch()` runs the job at once. No worker. Good for
@@ -74,7 +75,13 @@ class QueueConfig {
   /// Run a worker inside the web server (in the first isolate), so a
   /// small app needs no `bin/queue.dart` process. Heavy jobs then slow
   /// down the web requests. Use a worker process when jobs are heavy.
-  final bool workInProcess;
+  /// The old name `workInProcess` still works. When both are given,
+  /// [inProcess] wins.
+  final bool inProcess;
+
+  /// The old name of [inProcess].
+  @Deprecated('Use inProcess')
+  bool get workInProcess => inProcess;
 
   /// the queues of the in-process worker, first one first
   final List<String> workerQueues;

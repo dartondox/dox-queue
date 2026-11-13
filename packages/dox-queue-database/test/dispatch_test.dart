@@ -127,7 +127,7 @@ void main() {
         driver: 'database',
         jobs: jobRegistry,
         connection: 'sqlite',
-        workInProcess: true,
+        inProcess: true,
       );
       DoxTestClient client = await DoxTestClient.start(_app(config));
       try {

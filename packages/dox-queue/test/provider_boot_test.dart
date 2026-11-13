@@ -61,7 +61,7 @@ void main() {
     _Factory factory = _Factory();
     Queue.extend('empty', factory);
     QueueProvider provider = QueueProvider(
-      QueueConfig(driver: 'empty', workInProcess: true),
+      QueueConfig(driver: 'empty', inProcess: true),
     );
     await provider.setup();
     // other providers (eg. the mail jobs) are set up here
@@ -83,7 +83,7 @@ void main() {
       totalIsolate: 1,
       providers: <DoxProvider>[
         _LogProvider('a'),
-        QueueProvider(QueueConfig(driver: 'empty', workInProcess: true)),
+        QueueProvider(QueueConfig(driver: 'empty', inProcess: true)),
         _OtherLogProvider(),
       ],
     );
@@ -96,11 +96,11 @@ void main() {
     expect(factory.driver.pops, 0);
   });
 
-  test('workInProcess with the database driver but no dox_queue_database '
+  test('inProcess with the database driver but no dox_queue_database '
       'fails the start with a clear error', () async {
     Dox().initialize(AppConfig(appKey: 'k' * 32, totalIsolate: 1));
     QueueProvider provider = QueueProvider(
-      QueueConfig(driver: 'database', workInProcess: true),
+      QueueConfig(driver: 'database', inProcess: true),
     );
     await provider.setup();
     await expectLater(

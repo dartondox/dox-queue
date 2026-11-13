@@ -113,4 +113,20 @@ void main() {
       expect(driver.redis.option.password, isNull);
     });
   });
+
+  test('inProcess, and the deprecated workInProcess', () {
+    expect(QueueConfig().inProcess, isFalse);
+    expect(QueueConfig(inProcess: true).inProcess, isTrue);
+    // ignore: deprecated_member_use_from_same_package
+    QueueConfig old = QueueConfig(workInProcess: true);
+    expect(old.inProcess, isTrue);
+    // ignore: deprecated_member_use_from_same_package
+    expect(old.workInProcess, isTrue);
+    // both: inProcess wins
+    expect(
+      // ignore: deprecated_member_use_from_same_package
+      QueueConfig(inProcess: false, workInProcess: true).inProcess,
+      isFalse,
+    );
+  });
 }

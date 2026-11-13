@@ -50,7 +50,7 @@ QueueConfig queueConfig = QueueConfig(
 | `prefix` | `dox_queue:` | the start of every Redis key |
 | `connection` | default | the dox_orm connection name, for `dox_queue_database` |
 | `retryAfter` | 90 seconds | when a worker does not finish a job in this time, another worker can take it |
-| `workInProcess` | `false` | run a worker inside the web server, see [Small apps](#small-apps-a-worker-in-the-web-server) |
+| `inProcess` | `false` | run a worker inside the web server, see [Small apps](#small-apps-a-worker-in-the-web-server) |
 | `workerQueues` | `['default']` | the queues of the in-process worker |
 | `workerConcurrency` | `1` | jobs at once in the in-process worker |
 | `workerTimeoutGrace` | off | opt-in: after a timeout, the in-process worker waits up to this long for the old run (see Retries) |
@@ -928,19 +928,19 @@ dart run bin/queue.dart failed --connection=database
 ```
 
 - An entry uses only `driver`, `redis`, `prefix`, `connection` (the dox_orm one), `retryAfter` and `serializeSync`. The `jobs` of the main config count for all connections.
-- The in-process worker (`workInProcess`) runs the jobs of the main connection only.
+- The in-process worker (`inProcess`) runs the jobs of the main connection only.
 - Two `database` connections on the same dox_orm connection share the `jobs` and `failed_jobs` tables. Give each one its own dox_orm connection. If they share, `failed --connection=X` lists all failed jobs of the table, not only those of X.
 - `Queue.fake()` keeps the name in `PushedJob.connection`.
 
 ## Small apps: a worker in the web server
 
-You can skip the worker process. Set `workInProcess: true`:
+You can skip the worker process. Set `inProcess: true`:
 
 ```dart
 QueueConfig queueConfig = QueueConfig(
   driver: 'redis',
   jobs: jobRegistry,
-  workInProcess: true,
+  inProcess: true,
 );
 ```
 

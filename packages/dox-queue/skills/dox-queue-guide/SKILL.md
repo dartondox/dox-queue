@@ -87,7 +87,7 @@ class AppQueueProvider extends QueueProvider {
 
 `queue:table` does not overwrite an existing `create_queue_tables` migration.
 
-Main `QueueConfig` options: `driver` (`sync` default, `redis`, `database`), `jobs`, `redis`, `connection` (dox_orm name), `retryAfter` (90 seconds), `workInProcess`, `afterCommit`, `connections`. All options and the driver details are in `references/config-and-drivers.md`.
+Main `QueueConfig` options: `driver` (`sync` default, `redis`, `database`), `jobs`, `redis`, `connection` (dox_orm name), `retryAfter` (90 seconds), `inProcess`, `afterCommit`, `connections`. All options and the driver details are in `references/config-and-drivers.md`.
 
 Keep `retryAfter` bigger than your longest job. A longer job looks crashed, so a second worker runs it again.
 
@@ -285,6 +285,6 @@ To test one job, call `await SendWelcomeEmail(userId: 1).handle();`.
 
 - Run `dart run build_runner build` after any job change. A job missing from `jobRegistry` fails at dispatch or in the worker.
 - The default `tries` is 1. Set `tries` on jobs that retry, release, or sit in a chain. Deploy the worker with the web app, or an old worker fails new jobs.
-- A web server alone runs no jobs. Start `bin/queue.dart` (or set `workInProcess: true` for small apps).
+- A web server alone runs no jobs. Start `bin/queue.dart` (or set `inProcess: true` for small apps).
 - Mixins are opt-in: `InteractsWithQueue`, `HasMiddleware`, `ShouldBeUnique`, `ShouldBeEncrypted`, `CatchesError`, `Batchable`.
 - With the `sync` driver there is no queue: `delay` is ignored, `release()` does nothing, and a throwing job makes `dispatch()` throw.
