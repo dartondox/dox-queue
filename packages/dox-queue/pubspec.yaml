@@ -1,6 +1,6 @@
 name: dox_queue
 description: "Background jobs for the Dox framework: Redis and sync drivers, retries, delays, chains, batches and workers."
-version: 3.1.0
+version: 3.2.0
 repository: https://github.com/dartondox/dox-queue
 homepage: https://dartondox.dev
 
@@ -9,13 +9,9 @@ environment:
 resolution: workspace
 
 dependencies:
-  # Raise to the dox_core release that runs DoxProvider.boot() before
-  # releasing this package.
-  dox_core: ^3.1.0
-  # Raise to the dox_annotation release that has install.dart before
-  # releasing this package.
-  dox_annotation: ^3.1.3
-  ioredis: ^3.0.2
+  dox_core: ^3.2.0
+  dox_annotation: ^3.2.0
+  ioredis: ^3.2.0
 
 dev_dependencies:
   lints: ^6.1.0
