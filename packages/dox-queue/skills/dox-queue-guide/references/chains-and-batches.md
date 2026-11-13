@@ -79,7 +79,7 @@ class ImportRows extends DoxJob with Batchable {
 
 `Batch` has `id`, `name`, `totalJobs`, `pendingJobs`, `failedJobs`, `processedJobs`, `progress` (0 to 100), `finished`, `cancelled`, `cancel()` and `add(jobs)`. Read it again with `Queue.findBatch(id)`.
 
-- Batches need `dox_queue_database` (`QueueDatabase.register()` in the queue provider). The table is `job_batches` (also with the Redis driver). `dox queue:table` makes it. Without the package, `Queue.batch()` throws a `StateError` that says to add it.
+- Batches need `dox_queue_database` (the queue provider extends `DatabaseQueueProvider`). The table is `job_batches` (also with the Redis driver). `dox queue:table` makes it. Without the package, `Queue.batch()` throws a `StateError` that says to add it.
 - The first job that fails for good cancels the batch. Call `allowFailures()` to keep it going.
 - `cancel()` does not stop jobs. A `Batchable` job reads `cancelled` and skips its work.
 - An empty batch throws `ArgumentError`. `add(jobs)` on a finished or cancelled batch throws `StateError`.

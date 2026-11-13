@@ -32,7 +32,7 @@ QueueConfig queueConfig = QueueConfig(
 
 ## Database driver
 
-It is in the `dox_queue_database` package. Install it, then call `QueueDatabase.register()` in your queue provider before `super.setup()`. That turns on the `database` driver, the batch store and `afterCommit`. Without it, `QueueConfig(driver: 'database')` throws an `ArgumentError` that names the package.
+It is in the `dox_queue_database` package. Install it, then make your queue provider extend `DatabaseQueueProvider` in place of `QueueProvider`. That turns on the `database` driver, the batch store and `afterCommit`. Without it, `QueueConfig(driver: 'database')` throws an `ArgumentError` that names the package.
 
 - Postgres, MySQL 8+, MariaDB 10.6+ and SQLite work. Many workers do not wait on each other (`SKIP LOCKED`). SQLite is good for small apps.
 - Use another dox_orm connection with `QueueConfig(connection: 'postgres')`.

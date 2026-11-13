@@ -9,19 +9,8 @@ import 'database_queue_driver.dart';
 /// - the `job_batches` store of `Queue.batch()`,
 /// - `dispatch(afterCommit: true)` on dox_orm transactions.
 ///
-/// Call [register] in `setup()` of the queue provider, before
-/// `super.setup()`:
-/// ```
-/// class AppQueueProvider extends QueueProvider {
-///   AppQueueProvider() : super(queueConfig);
-///
-///   @override
-///   Future<void> setup() async {
-///     QueueDatabase.register();
-///     await super.setup();
-///   }
-/// }
-/// ```
+/// Most apps use [DatabaseQueueProvider], which calls [register]. Call
+/// [register] yourself only in a custom setup, before `Queue.configure()`.
 class QueueDatabase {
   /// Safe to call more than once.
   static void register() {
@@ -46,5 +35,22 @@ class OrmTransactions implements QueueTransactions {
   @override
   Future<void> afterCommit(Future<void> Function() callback) {
     return QueryBuilder.afterCommit(callback);
+  }
+}
+
+/// [QueueProvider] with the database parts of dox_queue turned on. Extend
+/// it in `lib/` so the generated container finds it:
+/// ```
+/// class AppQueueProvider extends DatabaseQueueProvider {
+///   AppQueueProvider() : super(queueConfig);
+/// }
+/// ```
+class DatabaseQueueProvider extends QueueProvider {
+  DatabaseQueueProvider(super.config);
+
+  @override
+  Future<void> setup() async {
+    QueueDatabase.register();
+    await super.setup();
   }
 }

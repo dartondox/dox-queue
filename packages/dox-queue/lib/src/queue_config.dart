@@ -168,8 +168,8 @@ class QueueConfig {
       throw ArgumentError.value(
         driver,
         'driver',
-        'needs the dox_queue_database package. Add it and call '
-            'QueueDatabase.register() (see its README)',
+        'needs the dox_queue_database package. Add it and extend '
+            'DatabaseQueueProvider in place of QueueProvider (see its README)',
       );
     }
     throw ArgumentError.value(

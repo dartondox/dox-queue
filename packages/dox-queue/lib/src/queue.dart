@@ -92,7 +92,7 @@ class Queue {
     if (repository == null) {
       throw StateError(
         'Queue.batch() needs a batch store. Add the dox_queue_database '
-        'package and call QueueDatabase.register() (see its README), or '
+        'package and extend DatabaseQueueProvider (see its README), or '
         'call Queue.useBatches().',
       );
     }
@@ -115,7 +115,7 @@ class Queue {
     if (transactions == null) {
       throw StateError(
         'afterCommit needs the transactions of the database. Add the '
-        'dox_queue_database package and call QueueDatabase.register() '
+        'dox_queue_database package and extend DatabaseQueueProvider '
         '(see its README), or call Queue.useTransactions().',
       );
     }

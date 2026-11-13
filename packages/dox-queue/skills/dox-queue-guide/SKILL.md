@@ -16,7 +16,7 @@ Detail on chains, batches and driver setup is in `references/`.
 dart pub add dox_queue
 ```
 
-Your app already runs `build_runner`. `dox_queue` adds a builder that writes `lib/generated/jobs.g.dart`.
+Your app already runs `build_runner` with `dox_builder`. It writes `lib/generated/jobs.g.dart`.
 
 1. Config, `lib/config/queue.dart`:
 
@@ -58,7 +58,7 @@ Future<void> main(List<String> args) async {
 
 The worker starts your providers (database, cache, queue). It does not start the HTTP server.
 
-4. Database driver, batches and `afterCommit` (optional). Install `dox_queue_database`, call `QueueDatabase.register()` in the provider before `super.setup()`, then make the tables:
+4. Database driver, batches and `afterCommit` (optional). Install `dox_queue_database`, make the queue provider extend `DatabaseQueueProvider`, then make the tables:
 
 ```bash
 dart pub add dox_queue_database
@@ -69,19 +69,12 @@ dox migrate
 Provider with it:
 
 ```dart
-import 'package:dox_queue/dox_queue.dart';
 import 'package:dox_queue_database/dox_queue_database.dart';
 
 import '../config/queue.dart';
 
-class AppQueueProvider extends QueueProvider {
+class AppQueueProvider extends DatabaseQueueProvider {
   AppQueueProvider() : super(queueConfig);
-
-  @override
-  Future<void> setup() async {
-    QueueDatabase.register();
-    await super.setup();
-  }
 }
 ```
 

@@ -13,7 +13,7 @@ The `dox_queue` package gives you jobs, two drivers (Redis and sync), retries, d
 dart pub add dox_queue
 ```
 
-`dox_queue` has a builder. Your app already runs `build_runner` for `dox_builder`, so nothing else is needed.
+The job builder is in `dox_builder`. Your app already runs `build_runner` with it, so nothing else is needed.
 
 ## How it works
 
@@ -107,22 +107,15 @@ The database driver, [job batches](#job-batches) and `afterCommit` live in the `
 dart pub add dox_queue_database
 ```
 
-Turn them on in your queue provider, before `super.setup()`:
+Make your queue provider extend `DatabaseQueueProvider` in place of `QueueProvider`. It turns them on:
 
 ```dart
-import 'package:dox_queue/dox_queue.dart';
 import 'package:dox_queue_database/dox_queue_database.dart';
 
 import '../config/queue.dart';
 
-class AppQueueProvider extends QueueProvider {
+class AppQueueProvider extends DatabaseQueueProvider {
   AppQueueProvider() : super(queueConfig);
-
-  @override
-  Future<void> setup() async {
-    QueueDatabase.register();
-    await super.setup();
-  }
 }
 ```
 
@@ -678,7 +671,7 @@ class ImportFailed extends DoxJob with Batchable, CatchesError {
 
 ### The table
 
-Batches are saved in the `job_batches` table. This is also so with the Redis driver. Batches need `dox_queue_database`: install it, call `QueueDatabase.register()` in your queue provider (see [step 4](#4-database-driver-batches-and-aftercommit-optional)), and run `dox queue:table`. Without it, `Queue.batch()` throws a `StateError` that says to add `dox_queue_database`.
+Batches are saved in the `job_batches` table. This is also so with the Redis driver. Batches need `dox_queue_database`: install it, extend `DatabaseQueueProvider` in your queue provider (see [step 4](#4-database-driver-batches-and-aftercommit-optional)), and run `dox queue:table`. Without it, `Queue.batch()` throws a `StateError` that says to add `dox_queue_database`.
 
 An app that does not use batches does not need the table.
 
@@ -825,26 +818,19 @@ The database driver, the batch store and `afterCommit` are in the [dox_queue_dat
 dart pub add dox_queue_database
 ```
 
-Register it in your queue provider, before `super.setup()`:
+Make your queue provider extend `DatabaseQueueProvider` in place of `QueueProvider`. It turns them on:
 
 ```dart
-import 'package:dox_queue/dox_queue.dart';
 import 'package:dox_queue_database/dox_queue_database.dart';
 
 import '../config/queue.dart';
 
-class AppQueueProvider extends QueueProvider {
+class AppQueueProvider extends DatabaseQueueProvider {
   AppQueueProvider() : super(queueConfig);
-
-  @override
-  Future<void> setup() async {
-    QueueDatabase.register();
-    await super.setup();
-  }
 }
 ```
 
-Then run `dox queue:table` and `dox migrate`. Without `QueueDatabase.register()`, `QueueConfig(driver: 'database')` throws an `ArgumentError` that names the package.
+Then run `dox queue:table` and `dox migrate`. Without it, `QueueConfig(driver: 'database')` throws an `ArgumentError` that names the package.
 
 ### Redis
 
