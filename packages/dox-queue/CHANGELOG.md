@@ -1,6 +1,7 @@
 ## Unreleased
 
 - Changed: `QueueProvider` starts the in-process worker (`workInProcess: true`) in `boot()`, after `setup()` of every provider, not in `setup()`. So the other providers (eg. the mail jobs of dox_mailer) are ready before the first job runs. The worker has its own job store from the provider config. `QueueWorker` (`bin/queue.dart`) runs `boot()` of every provider too. Needs the dox_core release that runs `DoxProvider.boot()`.
+- Breaking: code that runs the providers itself and calls only `setup()` (a custom runner) no longer starts the in-process worker. Call `boot()` of every provider after their `setup()` too.
 - `Queue.pruneBatches()` with no batch store gives a failed Future, not a throw.
 - Breaking: the `database` queue driver (`DatabaseQueueDriver`) moved to the new package `dox_queue_database`. Add the package and call `QueueDatabase.register()` in your queue provider, before `super.setup()`. `QueueConfig(driver: 'database')` without it throws an `ArgumentError` that names the package.
 - Breaking: `QueueTables` and the `dox queue:table` command moved to `dox_queue_database`. The migration that `dox queue:table` writes imports `package:dox_queue_database/dox_queue_database.dart`.
