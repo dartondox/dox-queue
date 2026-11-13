@@ -10,7 +10,15 @@ It has two drivers (`sync`, `redis`), retries, delays, failed jobs, chains and b
 For routes, controllers and services, see the dox-core-guide skill.
 Detail on chains, batches and driver setup is in `references/`.
 
-## Install and set up
+## Set up
+
+```bash
+dox add queue [--driver=database|redis|sync]
+```
+
+It adds the package, writes the config, the provider, `bin/queue.dart` and a sample job, and runs `build_runner`. The default driver is `database`: it also adds `dox_queue_database` and the migration of the jobs tables (needs `dox add orm` first). Then run `dox migrate`. The steps below are the same by hand.
+
+## Install by hand
 
 ```bash
 dart pub add dox_queue
