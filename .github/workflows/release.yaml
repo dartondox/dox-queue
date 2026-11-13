@@ -1,7 +1,9 @@
 name: Release
 
-# Push a tag like v<version> to publish the package to pub.dev.
-# The tag must match the version in pubspec.yaml and be on main.
+# Push a tag like v<version> to publish dox_queue and dox_queue_database
+# to pub.dev, in dependency order. A package that is already on pub.dev
+# with this version is skipped, so a failed release can be run again. The
+# tag must match the root pubspec version and be on main.
 # Wait for CI to be green on main before you push the tag.
 
 on:
@@ -10,6 +12,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
 
 jobs:
   # All CI tests must pass on the tag before anything is published.
@@ -27,14 +33,24 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Check the tag
+      - name: Check the tag is on main
         run: |
-          v=$(sed -nE 's/^version:[[:space:]]*([^[:space:]]+).*/\1/p' pubspec.yaml)
-          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "::error::tag $GITHUB_REF_NAME, pubspec $v"; exit 1; }
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::the tag is not on main"; exit 1; }
+      # Folder:package, in publish order. Sets PACKAGES for the next steps.
+      - name: Publish order
+        run: ci/publish-order.sh
+      - name: Check that tag and all package versions match the root version
+        run: ci/check-versions.sh
+      # Sets up the OIDC token for pub.dev. No secret needed.
       - uses: dart-lang/setup-dart@v1
         with:
           sdk: stable
-      - run: dart pub get
-      - name: Publish to pub.dev
-        run: dart pub publish --force
+      # Check every package before anything is uploaded. The workspace links
+      # the local packages, so this needs no wait for pub.dev. The uploads
+      # then skip this check (--skip-validation), see ci/publish.sh.
+      - name: Resolve the workspace
+        run: dart pub get
+      - name: Check every package (dry run)
+        run: ci/publish-dry-run.sh
+      - name: Publish packages in order
+        run: ci/publish.sh

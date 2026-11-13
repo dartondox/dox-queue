@@ -1,0 +1,678 @@
+# Queue
+
+A queue runs slow work in the background. The request answers at once. A worker process does the work later.
+
+Use it to send emails, call slow APIs, make reports or resize images.
+The `dox_queue` package gives you jobs, two drivers (Redis and sync), retries, delays and a worker. The database driver is in [dox_queue_database](https://pub.dev/packages/dox_queue_database).
+
+## Install
+
+```bash
+dart pub add dox_queue
+```
+
+`dox_queue` has a builder. Your app already runs `build_runner` for `dox_builder`, so nothing else is needed.
+
+## How it works
+
+1. You write a job class with `@Job()`.
+2. `dart run build_runner build` writes `lib/generated/jobs.g.dart`. It knows how to save and load each job.
+3. Your code calls `dispatch()`. The job is saved in Redis (or in the database, with `dox_queue_database`).
+4. A worker (`dart run bin/queue.dart`) takes the job and runs its `handle()` method.
+
+## Set up
+
+### 1. Config
+
+```dart title="lib/config/queue.dart"
+import 'package:dox_queue/dox_queue.dart';
+
+import '../generated/jobs.g.dart';
+
+QueueConfig queueConfig = QueueConfig(
+  /// sync, redis (or database, with dox_queue_database)
+  driver: 'redis',
+
+  /// every @Job class, from lib/generated/jobs.g.dart
+  jobs: jobRegistry,
+);
+```
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `driver` | `sync` | `sync`, `redis` or `database` (needs [dox_queue_database](#database-driver-batches-and-aftercommit)) |
+| `jobs` | empty | `jobRegistry` from `lib/generated/jobs.g.dart` |
+| `redis` | localhost:6379 | `RedisOptions(host: ..., port: ..., password: ...)` for the `redis` driver |
+| `prefix` | `dox_queue:` | the start of every Redis key |
+| `connection` | default | the dox_orm connection name, for `dox_queue_database` |
+| `retryAfter` | 90 seconds | when a worker does not finish a job in this time, another worker can take it |
+| `inProcess` | `false` | run a worker inside the web server, see [Small apps](#small-apps-a-worker-in-the-web-server) |
+| `workerQueues` | `['default']` | the queues of the in-process worker |
+| `workerConcurrency` | `1` | jobs at once in the in-process worker |
+| `workerTimeoutGrace` | off | opt-in: after a timeout, the in-process worker waits up to this long for the old run (see Retries) |
+| `serializeSync` | `false` | opt-in: the `sync` driver saves the job and reads it back before it runs, see [Sync](#sync) |
+| `connections` | none | opt-in: more queue connections by name, see [Queue connections](#queue-connections) |
+| `afterCommit` | `false` | opt-in: push jobs that are dispatched inside a transaction only after it commits, see [Dispatch after the commit](#dispatch-after-the-commit) |
+
+!!! warning "Keep `retryAfter` bigger than your longest job"
+    `retryAfter` is how Dox finds the job of a crashed worker.
+    A job that runs longer than `retryAfter` looks crashed, so a second worker runs it again.
+
+### 2. Provider
+
+The provider sets up the queue in every isolate. Put it in `lib/` so the generated container finds it.
+
+```dart title="lib/providers/queue_provider.dart"
+import 'package:dox_queue/dox_queue.dart';
+
+import '../config/queue.dart';
+
+/// Sets up the queue. Dox finds every DoxProvider class,
+/// see lib/container.g.dart.
+class AppQueueProvider extends QueueProvider {
+  AppQueueProvider() : super(queueConfig);
+}
+```
+
+### 3. Worker file
+
+```dart title="bin/queue.dart"
+import 'dart:io';
+
+import 'package:dox_queue/dox_queue.dart';
+import 'package:dox_sample/config/app.dart';
+
+/// run queued jobs: `dart run bin/queue.dart [work] [flags]`.
+/// the `dox` CLI runs this file for its queue commands.
+Future<void> main(List<String> args) async {
+  exitCode = await QueueWorker(app: appConfig).run(args);
+}
+```
+
+The worker starts the providers of your app (database, cache, queue). It does not start the HTTP server.
+
+### 4. Database driver, batches and afterCommit (optional)
+
+The database driver, [job batches](#job-batches) and `afterCommit` live in the `dox_queue_database` package. Skip this step when you use only Redis or sync and none of these.
+
+```bash
+dart pub add dox_queue_database
+```
+
+Turn them on in your queue provider, before `super.setup()`:
+
+```dart
+import 'package:dox_queue/dox_queue.dart';
+import 'package:dox_queue_database/dox_queue_database.dart';
+
+import '../config/queue.dart';
+
+class AppQueueProvider extends QueueProvider {
+  AppQueueProvider() : super(queueConfig);
+
+  @override
+  Future<void> setup() async {
+    QueueDatabase.register();
+    await super.setup();
+  }
+}
+```
+
+Then make the tables:
+
+```bash
+dox queue:table
+dox migrate
+```
+
+See [dox_queue_database](https://pub.dev/packages/dox_queue_database) for the tables and the details.
+
+## Write a job
+
+```dart title="lib/app/jobs/send_welcome_email.job.dart"
+import 'package:dox_core/dox_core.dart';
+import 'package:dox_queue/dox_queue.dart';
+
+@Job()
+class SendWelcomeEmail extends DoxJob {
+  SendWelcomeEmail({required this.userId});
+
+  final int userId;
+
+  /// run up to 3 times
+  @override
+  int get tries => 3;
+
+  /// wait 10 seconds before the 2nd try, 60 seconds before the 3rd
+  @override
+  List<Duration> get backoff => const <Duration>[
+    Duration(seconds: 10),
+    Duration(seconds: 60),
+  ];
+
+  /// stop a try after 30 seconds
+  @override
+  Duration? get timeout => const Duration(seconds: 30);
+
+  /// the queue of this job
+  @override
+  String get queue => 'emails';
+
+  @override
+  Future<void> handle() async {
+    MailService mail = Dox().ioc.get<MailService>();
+    await mail.sendWelcome(userId);
+  }
+
+  /// runs once, after the last try failed
+  @override
+  Future<void> failed(Object error, StackTrace stack) async {
+    // tell someone, or clean up
+  }
+}
+```
+
+Run `dart run build_runner build` after you add or change a job.
+
+All the settings are optional:
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `tries` | the worker `--tries` (1) | how many times to run the job before it fails |
+| `backoff` | none (retry at once) | the wait before each retry. The last entry is used for the rest |
+| `timeout` | the worker `--timeout` (60 seconds) | the max run time of one try |
+| `queue` | `default` | the queue to put the job on |
+| `failed()` | does nothing | runs once, after the last try failed |
+
+### What is saved
+
+The parameters of the unnamed constructor are saved with the job.
+Each parameter needs a field or getter with the same name.
+
+These types work:
+
+- `int`, `double`, `num`, `String`, `bool`
+- `DateTime`
+- enums (saved by name)
+- `List` and `Map<String, ...>` of these, also nested
+- `dynamic` and `Object` (the value must be JSON)
+- nullable versions of all of them
+
+Any other type stops the build with a clear message.
+
+!!! tip "Save an id, not an object"
+    Do not save a `User`. Save the `userId`, and load the user in `handle()`.
+    The user may change between dispatch and run. The id gives you fresh data.
+
+### Encrypted jobs
+
+Job data is saved as plain JSON in Redis or the `jobs` table.
+To hide it from anyone who can read the store, add `ShouldBeEncrypted`:
+
+```dart
+@Job()
+class ChargeCard extends DoxJob with ShouldBeEncrypted {
+  // ...
+}
+```
+
+The data is then encrypted with AES-GCM and the app key (`AppConfig.appKey`).
+The worker needs the same key, or the old key in `AppConfig.previousKeys`.
+The job name, queue and id stay plain text.
+Jobs without the mixin are saved as before.
+
+### Services in a job
+
+A job is made again from its saved data, so it can not get services in its constructor.
+Get them in `handle()` from the Dox container:
+
+```dart
+UserService users = Dox().ioc.get<UserService>();
+```
+
+The worker runs `registerContainer`, so every `@Inject()` class of your app is there.
+
+### Job names
+
+The class name is saved with each job. When you rename a class, queued jobs of the old name can not be found.
+Keep the old name with `@Job(name: 'SendWelcomeEmail')`.
+
+## Dispatch a job
+
+```dart
+await SendWelcomeEmail(userId: user.id).dispatch();
+```
+
+Both ways do the same:
+
+```dart
+await Queue.dispatch(SendWelcomeEmail(userId: user.id));
+```
+
+A delay, another queue:
+
+```dart
+await SendWelcomeEmail(userId: 1).dispatch(
+  delay: Duration(minutes: 10),
+  queue: 'emails',
+);
+```
+
+`dispatch()` returns the job id.
+
+Run a job now, in this process, with no queue:
+
+```dart
+await SendWelcomeEmail(userId: 1).dispatchSync();
+```
+
+Run a job in this process after the response is sent. The client does not wait for it:
+
+```dart
+SendWelcomeEmail(userId: 1).dispatchAfterResponse();
+```
+
+It does not go on the queue, so there is no job id and no retry. When the server stops, a job that did not run yet is lost.
+
+### Dispatch after the commit
+
+A job that you dispatch inside a database transaction is pushed at once.
+This option needs `dox_queue_database` (see [step 4](#4-database-driver-batches-and-aftercommit-optional)). Without it, a dispatch with `afterCommit` on throws a `StateError`.
+A worker can run it before the transaction commits, or after it rolls back.
+Then the job reads data that is not saved yet, or data that is never saved.
+
+`afterCommit: true` waits for the commit:
+
+```dart
+await QueryBuilder.transaction(() async {
+  User user = await User().create(<String, dynamic>{'email': email});
+  await SendWelcomeEmail(userId: user.id).dispatch(afterCommit: true);
+});
+```
+
+- Inside a transaction, the job is pushed after the outermost transaction commits.
+- When the transaction rolls back, the job is not pushed.
+- Outside a transaction, the job is pushed at once.
+- `dispatch()` returns the job id at once. The id is made before the push.
+- A job that is not in the registry, or data that is not JSON, throws at `dispatch()`, not at the commit.
+- When the push fails after the commit, the `QueryBuilder.transaction()` call throws that error. The data stays saved.
+- The `sync` driver runs the job after the commit.
+- It waits only for a transaction on the default dox_orm connection, opened with no `connection:` name. A transaction opened by name pushes the job at once, also when the name is the one of the default connection.
+- `dispatchIf()`, `dispatchUnless()` and `Queue.dispatch()` take `afterCommit` too.
+- `dispatchSync()` and `dispatchAfterResponse()` run the job as before. They do not wait for a commit.
+
+Turn it on for every dispatch with `QueueConfig(afterCommit: true)`.
+Then `afterCommit: false` on one dispatch pushes that job at once.
+
+`Queue.fake()` keeps the job when you call `dispatch()`, also when the transaction later rolls back.
+
+It works through `QueryBuilder.afterCommit()` of dox_orm, set up by `dox_queue_database`.
+
+## Run the worker
+
+```bash
+dart run bin/queue.dart
+```
+
+Commands:
+
+| Command | What it does |
+| --- | --- |
+| `work` | run jobs. This is the default |
+| `failed` | list the failed jobs |
+| `retry <id>` | put one failed job back on its queue |
+| `retry all` | put all failed jobs back |
+| `forget <id>` | delete one failed job |
+| `flush` | delete all failed jobs |
+
+Flags of `work`:
+
+| Flag | Default | What it does |
+| --- | --- | --- |
+| `--queue=high,default` | `default` | the queues to work. The first one goes first |
+| `--concurrency=4` | `1` | jobs at once in this process |
+| `--once` | off | run one job, then stop |
+| `--tries=3` | `1` | tries of a job that does not set `tries` |
+| `--timeout=60` | `60` | max run time in seconds of a job that does not set `timeout` |
+| `--sleep=3` | `3` | seconds to wait when the queues are empty |
+| `--stop-when-empty` | off | stop when the queues are empty |
+| `--timeout-grace=30` | off | after a timeout, wait up to this many seconds for the old run to end before the next try |
+
+```bash
+dart run bin/queue.dart work --queue=emails,default --concurrency=4
+```
+
+`--concurrency` runs jobs as async tasks on one thread. It helps for jobs that wait (email, HTTP, database).
+For CPU heavy jobs, run more worker processes.
+
+### Stop the worker
+
+Press Ctrl+C, or send SIGTERM (`docker stop` does it).
+The worker takes no new job. It waits for the running jobs, then it stops.
+A second signal stops it at once.
+
+!!! warning "Restart the worker after a deploy"
+    The worker keeps your code in memory. Restart it after each deploy, or it runs the old code.
+
+### Keep it running
+
+Run the worker as its own process, next to the web server. For example with Docker Compose:
+
+```yaml
+services:
+  web:
+    build: .
+    command: dart run bin/server.dart
+  worker:
+    build: .
+    command: dart run bin/queue.dart work --concurrency=4
+```
+
+Or with systemd, Supervisor or a second Fly.io process. Set it to restart when it stops.
+
+## Retries and failed jobs
+
+When `handle()` throws:
+
+1. The worker waits the `backoff` time and tries again, up to `tries` times.
+2. After the last try, the job goes to the failed jobs, and `failed()` runs.
+
+A timeout counts as a failed try.
+
+!!! info "A timeout does not stop the code"
+    Dart can not stop a running `Future`.
+    After a timeout the try counts as failed, but `handle()` keeps running in the background until it ends.
+    Write jobs that are safe to run twice.
+
+So by default the next try can start while the old run still works.
+Then the job runs twice at the same time.
+To stop this, start the worker with `--timeout-grace=SECONDS` (or `WorkerOptions(timeoutGrace: ...)`, or `QueueConfig(workerTimeoutGrace: ...)` for the in-process worker).
+After a timeout, the worker then waits for the old run to end, up to that time, before it tries again or fails the job.
+The result of the old run is ignored: the try still counts as failed.
+While the worker waits, it takes no other job.
+If the old run is still going when the grace time ends, the worker logs a warning and goes on.
+Keep `timeout` plus the grace time below `retryAfter`, or another worker can take the job again while this one waits. Then the double run still happens.
+
+When a worker crashes, its job stays reserved. After `retryAfter` another worker takes it.
+This counts as a try. When there are no tries left, the job fails with a message that the worker did not finish.
+
+Failed jobs are kept until you retry or delete them:
+
+```bash
+dart run bin/queue.dart failed
+dart run bin/queue.dart retry 6f1c0e...
+dart run bin/queue.dart retry all
+dart run bin/queue.dart forget 6f1c0e...
+dart run bin/queue.dart flush
+```
+
+### Control the job in handle()
+
+Add the opt-in `InteractsWithQueue` mixin. Then, inside `handle()`, the job can decide what happens next:
+
+| Call | What it does |
+| --- | --- |
+| `attempts()` | how many times a worker took the job. The first run gives 1 |
+| `release(delay)` | put the job back on its queue. It runs again after `delay` |
+| `fail(error)` | fail the job now, with no retry. `failed()` runs |
+| `delete()` | delete the job, with no retry and no `failed()` |
+
+```dart
+@Job()
+class SendReport extends DoxJob with InteractsWithQueue {
+  SendReport({required this.reportId});
+
+  final int reportId;
+
+  @override
+  int get tries => 5;
+
+  @override
+  Future<void> handle() async {
+    ReportApi api = Dox().ioc.get<ReportApi>();
+    if (await api.isBusy()) {
+      release(Duration(seconds: 30));
+      return;
+    }
+    if (!await api.hasReport(reportId)) {
+      delete();
+      return;
+    }
+    await api.send(reportId);
+  }
+}
+```
+
+The worker does the call when `handle()` ends. When you call more than one, the last one wins.
+A call also wins over an error that `handle()` throws after it.
+When `handle()` times out, the call is dropped, and the timeout rules count.
+
+`release()` counts as a try. The default `tries` is 1, so the job then fails on its next pickup.
+Set `tries` above 1 (or `retryUntil`) when a job calls `release()`.
+
+With `dispatchSync()`, `dispatchAfterResponse()` and the `sync` driver there is no queue.
+There `attempts()` is 1, `release()` and `delete()` do nothing, and `fail()` only runs `failed()`.
+
+In a test file, `package:test` has its own `fail()`. Inside a job class with the mixin, a bare `fail(...)` calls the job method. Write `this.fail(...)` to make it clear.
+
+## Drivers
+
+| Driver | Where jobs are | Needs |
+| --- | --- | --- |
+| `sync` | nowhere: `dispatch()` runs the job at once | nothing |
+| `database` | the `jobs` and `failed_jobs` tables | [dox_queue_database](#database-driver-batches-and-aftercommit) |
+| `redis` | Redis lists and sorted sets | Redis |
+
+### Database driver, batches and afterCommit
+
+The database driver, the batch store and `afterCommit` are in the [dox_queue_database](https://pub.dev/packages/dox_queue_database) package. It keeps jobs in the `jobs` table and failed jobs in `failed_jobs`, on Postgres, MySQL 8+, MariaDB 10.6+ or SQLite.
+
+```bash
+dart pub add dox_queue_database
+```
+
+Register it in your queue provider, before `super.setup()`:
+
+```dart
+import 'package:dox_queue/dox_queue.dart';
+import 'package:dox_queue_database/dox_queue_database.dart';
+
+import '../config/queue.dart';
+
+class AppQueueProvider extends QueueProvider {
+  AppQueueProvider() : super(queueConfig);
+
+  @override
+  Future<void> setup() async {
+    QueueDatabase.register();
+    await super.setup();
+  }
+}
+```
+
+Then run `dox queue:table` and `dox migrate`. Without `QueueDatabase.register()`, `QueueConfig(driver: 'database')` throws an `ArgumentError` that names the package.
+
+### Redis
+
+```dart
+QueueConfig queueConfig = QueueConfig(
+  driver: 'redis',
+  jobs: jobRegistry,
+  redis: RedisOptions(host: env.redisHost, port: 6379),
+);
+```
+
+To read the Redis server from the env (or `.env`), use `QueueConfig.redisFromEnv()`:
+
+```dart
+QueueConfig queueConfig = QueueConfig(
+  driver: 'redis',
+  jobs: jobRegistry,
+  redis: QueueConfig.redisFromEnv(),
+);
+```
+
+It reads:
+
+- `REDIS_URL`, like `rediss://user:password@host:6380/0`. `rediss://` turns on TLS. When it is set, the keys below are not read.
+- Else `REDIS_HOST`, `REDIS_PORT`, `REDIS_USERNAME`, `REDIS_PASSWORD` and `REDIS_TLS` (`true` turns on TLS).
+
+A key that is not set keeps its default. With no keys it is localhost:6379.
+It is opt-in: when you leave out `redis`, the queue uses localhost:6379 and does not read the env.
+
+Each queue has a list of ready jobs, a sorted set of delayed jobs and a sorted set of reserved jobs.
+A Lua script takes a job, so two workers never get the same one. Failed jobs are in the hash `dox_queue:failed`.
+
+### Sync
+
+`dispatch()` runs the job at once and waits for it. There is no worker, no retry and no delay.
+When the job throws, `failed()` runs and `dispatch()` throws the error.
+Use it for tests and for local work.
+
+By default the sync driver runs the job object as it is.
+So a job that is not in `jobRegistry`, or a field that is not JSON, works here and fails later in the worker.
+Set `serializeSync: true` to save the job and read it back before it runs, the way a worker gets it:
+
+```dart
+Queue.configure(
+  QueueConfig(driver: 'sync', jobs: jobRegistry, serializeSync: true),
+);
+```
+
+Then `dispatch()` throws for such a job.
+
+## Queue connections
+
+One app can use more than one queue store.
+The config is the main connection. Add more in `connections`, by name:
+
+```dart
+QueueConfig queueConfig = QueueConfig(
+  driver: 'redis',
+  jobs: jobRegistry,
+  connections: <String, QueueConfig>{
+    'database': QueueConfig(driver: 'database'),
+  },
+);
+```
+
+Pick a connection when you dispatch:
+
+```dart
+await SendReport(reportId: 1).dispatch(connection: 'database');
+```
+
+With no `connection`, the job goes to the main connection.
+An unknown name throws an `ArgumentError`.
+
+Run a worker for each connection. Every command of `bin/queue.dart` takes `--connection`:
+
+```bash
+dart run bin/queue.dart work
+dart run bin/queue.dart work --connection=database
+dart run bin/queue.dart failed --connection=database
+```
+
+- An entry uses only `driver`, `redis`, `prefix`, `connection` (the dox_orm one), `retryAfter` and `serializeSync`. The `jobs` of the main config count for all connections.
+- The in-process worker (`inProcess`) runs the jobs of the main connection only.
+- Two `database` connections on the same dox_orm connection share the `jobs` and `failed_jobs` tables. Give each one its own dox_orm connection. If they share, `failed --connection=X` lists all failed jobs of the table, not only those of X.
+- `Queue.fake()` keeps the name in `PushedJob.connection`.
+
+## Small apps: a worker in the web server
+
+You can skip the worker process. Set `inProcess: true`:
+
+```dart
+QueueConfig queueConfig = QueueConfig(
+  driver: 'redis',
+  jobs: jobRegistry,
+  inProcess: true,
+);
+```
+
+The first isolate of the web server then runs jobs too. When the server stops, it waits for the running jobs.
+
+!!! warning "Heavy jobs slow down your API"
+    The jobs share the isolate with web requests.
+    A long or CPU heavy job makes requests on that isolate slow.
+    Use a worker process when your jobs are heavy or many.
+
+## Testing
+
+Use the `sync` driver. `dispatch()` then runs the job at once, so you can check the result right after.
+
+```dart
+import 'package:dox_queue/dox_queue.dart';
+import 'package:dox_sample/generated/jobs.g.dart';
+import 'package:test/test.dart';
+
+void main() {
+  setUp(() {
+    Queue.configure(QueueConfig(driver: 'sync', jobs: jobRegistry));
+  });
+
+  test('sends the welcome email', () async {
+    await SendWelcomeEmail(userId: 1).dispatch();
+    // check the email was sent
+  });
+}
+```
+
+To check that your code dispatched a job, without running the job, use `Queue.fake()`. It keeps every dispatched job in a list. It does not run or save them. It needs no `Queue.configure()`.
+
+```dart
+import 'package:dox_queue/dox_queue.dart';
+import 'package:test/test.dart';
+
+void main() {
+  late QueueFake queue;
+
+  setUp(() {
+    queue = Queue.fake();
+  });
+
+  tearDown(Queue.restore);
+
+  test('signing up queues the welcome email', () async {
+    await signUp(userId: 1);
+
+    queue.assertPushed<SendWelcomeEmail>();
+    queue.assertPushed<SendWelcomeEmail>(
+      (SendWelcomeEmail job) => job.userId == 1,
+    );
+    queue.assertPushedTimes<SendWelcomeEmail>(1);
+    queue.assertNotPushed<SendInvoice>();
+  });
+}
+```
+
+| Method | Checks |
+|---|---|
+| `assertPushed<T>([test])` | a `T` job was pushed. With `test`, one of them passes it. |
+| `assertPushedTimes<T>(n)` | exactly `n` `T` jobs were pushed |
+| `assertNotPushed<T>()` | no `T` job was pushed |
+| `assertNothingPushed()` | no job was pushed at all |
+
+A failed check throws an `AssertionError` that says what was pushed.
+
+To read the jobs, use `queue.pushed`. Each item has the `job`, the `queue` name and the `delay` (null when there was none). `queue.jobsOf<T>()` gives the `T` jobs. `queue.clear()` forgets them.
+
+- `dispatchSync()` is not faked. It still runs the job.
+- `Mail.queue()` and `Mail.later()` of dox_mailer go through `dispatch()`, so the fake catches them too. A custom queue set with `Mail.useQueue()` is not caught.
+- `Queue.restore()` stops the fake.
+
+To test a job alone, call `handle()`:
+
+```dart
+await SendWelcomeEmail(userId: 1).handle();
+```
+
+To test the queue itself, use a driver with a test store (for example Redis, or the `database` driver of `dox_queue_database` with SQLite `:memory:`), and run a worker that stops when the queue is empty:
+
+```dart
+await Worker(
+  driver: Queue.driver,
+  jobs: jobRegistry,
+  options: WorkerOptions(stopWhenEmpty: true),
+).run();
+```
