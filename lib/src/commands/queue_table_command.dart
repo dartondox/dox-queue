@@ -1,6 +1,6 @@
 import 'dart:io';
 
-import 'package:dox_core/command.dart';
+import 'package:dox_annotation/command.dart';
 
 /// `dox queue:table`: write a migration that makes the `jobs` and
 /// `failed_jobs` tables of the database driver, and the `job_batches`
