@@ -567,7 +567,7 @@ class Queue {
   static Future<int> pruneBatches(
     DateTime before, {
     DateTime? unfinishedBefore,
-  }) {
+  }) async {
     return batches.prune(before, unfinishedBefore: unfinishedBefore);
   }
 

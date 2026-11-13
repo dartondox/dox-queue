@@ -12,6 +12,8 @@ dependencies:
   analyzer: ^14.6.0
   build: ^5.0.0
   dart_style: ^3.1.14
+  # Raise to the dox_core release that runs DoxProvider.boot() before
+  # releasing this package.
   dox_core: ^3.1.0
   glob: ^2.2.0
   ioredis: ^3.0.2

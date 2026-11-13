@@ -75,6 +75,12 @@ void main() {
     expect(JobLog.handled, isEmpty);
   });
 
+  test('pruneBatches without a batch store gives a failed Future', () {
+    Queue.configure(QueueConfig(jobs: jobRegistry));
+    Future<int> result = Queue.pruneBatches(DateTime.now());
+    expect(result, throwsA(isA<StateError>()));
+  });
+
   test('afterCommit without transactions throws', () async {
     Queue.configure(QueueConfig(jobs: jobRegistry));
     expect(

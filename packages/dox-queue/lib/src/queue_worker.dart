@@ -112,6 +112,9 @@ Flags of work:
       for (DoxProvider provider in providers) {
         await provider.setup();
       }
+      for (DoxProvider provider in providers) {
+        await provider.boot();
+      }
       return await _run(command);
     } catch (error) {
       stderr.writeln('Queue: $error');
