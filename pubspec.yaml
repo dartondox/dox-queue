@@ -2,7 +2,7 @@ name: dox_queue_workspace
 publish_to: 'none'
 # All packages in packages/ share this version. Change it here, then run
 # bin/update_versions.sh.
-version: 3.2.0
+version: 3.2.1
 
 environment:
   sdk: ^3.13.0

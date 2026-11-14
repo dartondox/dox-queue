@@ -1,6 +1,6 @@
 name: dox_queue
 description: "Background jobs for the Dox framework: Redis and sync drivers, retries, delays, chains, batches and workers."
-version: 3.2.0
+version: 3.2.1
 repository: https://github.com/dartondox/dox-queue
 homepage: https://dartondox.dev
 
