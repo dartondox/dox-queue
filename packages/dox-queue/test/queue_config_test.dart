@@ -80,11 +80,11 @@ void main() {
         error = e;
       }
       expect(error, isNotNull, reason: url);
-      String text = '$error';
-      expect(text, isNot(contains(pass)), reason: text);
+      String text = '$error'.toLowerCase();
+      expect(text, isNot(contains(pass.toLowerCase())), reason: text);
       expect(text, isNot(contains('p%40ss')), reason: text);
-      expect(text, isNot(contains('SECRET')), reason: text);
-      expect(text, contains('REDIS_URL'));
+      expect(text, isNot(contains('secret')), reason: text);
+      expect(text, contains('redis_url'));
     }
 
     test('bad port', () => expectMasked('redis://app:p%40ss%2Fword@host:99x'));
@@ -99,6 +99,22 @@ void main() {
     });
     test('password in the query string', () {
       expectMasked('http://host?password=SECRET');
+    });
+    test('no scheme, token before the colon', () {
+      expectMasked('tok3nSecret:@host/0');
+      expectMasked('tok3nSecret:pw@host');
+      for (String url in <String>[
+        'tok3nSecret:@host/0',
+        'tok3nSecret:pw@host',
+      ]) {
+        Object? error;
+        try {
+          QueueConfig.redisFromEnv(<String, String>{'REDIS_URL': url});
+        } catch (e) {
+          error = e;
+        }
+        expect('$error'.toLowerCase(), isNot(contains('tok3nsecret')));
+      }
     });
     test('password with #', () => expectMasked('redis://app:p#ss@host:abc'));
   });

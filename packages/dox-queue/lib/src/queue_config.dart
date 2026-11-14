@@ -211,11 +211,7 @@ class QueueConfig {
       throw FormatException('REDIS_URL is not a valid URL');
     }
     if (uri.scheme != 'redis' && uri.scheme != 'rediss') {
-      throw ArgumentError.value(
-        uri.scheme,
-        'REDIS_URL scheme',
-        'must be redis or rediss',
-      );
+      throw ArgumentError('REDIS_URL must start with redis:// or rediss://');
     }
     String? username;
     String? password;

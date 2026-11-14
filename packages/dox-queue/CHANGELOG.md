@@ -1,5 +1,6 @@
 ## Unreleased
 
+- Fix: the wrong-scheme error of a bad `REDIS_URL` no longer shows any part of the URL. Before, it showed the text before the first `:`. For a URL with no scheme, that text can be a user name or a secret token. Now the error is the fixed text `REDIS_URL must start with redis:// or rediss://`.
 - Fix: a bad `REDIS_URL` no longer puts the Redis password in the error. Before, a bad port or a wrong scheme gave an error with the full URL, so the password went to the logs. Now the error shows the URL with the user and password hidden.
 - Fix: the queue worker (`QueueWorker`, `bin/queue.dart work`) now checks `APP_KEY` at start, like the web server does. A short or public sample key stops the worker in production and only logs a warning in development, local and test.
 
