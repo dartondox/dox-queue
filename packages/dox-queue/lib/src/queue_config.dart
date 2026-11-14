@@ -203,19 +203,18 @@ class QueueConfig {
   }
 
   static RedisOptions _redisFromUrl(String url) {
-    // The URL can hold a password, so errors only show a masked copy.
-    String safeUrl = url.replaceFirst(RegExp(r'//.*@'), '//***@');
+    // The URL can hold a password anywhere, so no error shows any part of it.
     Uri uri;
     try {
       uri = Uri.parse(url);
     } on FormatException {
-      throw FormatException('REDIS_URL is not a valid URL: $safeUrl');
+      throw FormatException('REDIS_URL is not a valid URL');
     }
     if (uri.scheme != 'redis' && uri.scheme != 'rediss') {
       throw ArgumentError.value(
-        safeUrl,
-        'REDIS_URL',
-        'must start with redis://',
+        uri.scheme,
+        'REDIS_URL scheme',
+        'must be redis or rediss',
       );
     }
     String? username;
@@ -229,13 +228,13 @@ class QueueConfig {
           password = Uri.decodeComponent(uri.userInfo.substring(colon + 1));
         }
       } catch (_) {
-        throw FormatException('REDIS_URL has a bad user or password: $safeUrl');
+        throw FormatException('REDIS_URL has a bad user or password');
       }
     }
     String db = uri.pathSegments.isEmpty ? '' : uri.pathSegments.first;
     // the path can hold a part of a password with a `/`, so it is not shown
     if (db.isNotEmpty && int.tryParse(db) == null) {
-      throw FormatException('REDIS_URL database is not a number: $safeUrl');
+      throw FormatException('REDIS_URL database is not a number');
     }
     return RedisOptions(
       host: uri.host.isEmpty ? '127.0.0.1' : uri.host,
