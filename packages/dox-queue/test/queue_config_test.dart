@@ -70,6 +70,39 @@ void main() {
     });
   });
 
+  group('REDIS_URL errors never hold the password', () {
+    const String pass = 'p@ss/word';
+    void expectMasked(String url) {
+      Object? error;
+      try {
+        QueueConfig.redisFromEnv(<String, String>{'REDIS_URL': url});
+      } catch (e) {
+        error = e;
+      }
+      expect(error, isNotNull, reason: url);
+      String text = '$error';
+      expect(text, isNot(contains(pass)), reason: text);
+      expect(text, isNot(contains('p%40ss')), reason: text);
+      expect(text, isNot(contains('SECRET')), reason: text);
+      expect(text, contains('REDIS_URL'));
+    }
+
+    test('bad port', () => expectMasked('redis://app:p%40ss%2Fword@host:99x'));
+    test('wrong scheme', () => expectMasked('http://app:p%40ss%2Fword@host'));
+    test('password with /', () => expectMasked('redis://app:p@ss/word@host:x'));
+    test('password with @', () => expectMasked('redis://app:p@ss@host:abc/1'));
+    test('db part that is not a number', () {
+      expectMasked('redis://:12/p@ss/word@host');
+    });
+    test('scheme with a single colon', () {
+      expectMasked('rediz:user:SECRET@host');
+    });
+    test('password in the query string', () {
+      expectMasked('http://host?password=SECRET');
+    });
+    test('password with #', () => expectMasked('redis://app:p#ss@host:abc'));
+  });
+
   group('createDriver', () {
     bool realEnvHasUrl = Platform.environment.containsKey('REDIS_URL');
 

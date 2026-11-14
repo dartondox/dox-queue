@@ -1,4 +1,4 @@
-import 'package:dox_core/dox_core.dart' show AppConfig, Dox, DoxProvider;
+import 'package:dox_core/dox_core.dart' show AppConfig, Dox, DoxProvider, Env;
 import 'package:dox_queue/dox_queue.dart';
 import 'package:test/test.dart';
 
@@ -94,6 +94,33 @@ void main() {
     // in-process worker of QueueProvider.boot() off
     expect(factory.made, 1);
     expect(factory.driver.pops, 0);
+  });
+
+  test('the worker stops on a short APP_KEY in production', () async {
+    Queue.extend('empty', _Factory());
+    Env().env['APP_ENV'] = 'production';
+    addTearDown(() => Env().env.remove('APP_ENV'));
+    AppConfig app = AppConfig(
+      appKey: 'short',
+      totalIsolate: 1,
+      providers: <DoxProvider>[QueueProvider(QueueConfig(driver: 'empty'))],
+    );
+    expect(await QueueWorker(app: app).run(<String>['work', '--once']), 1);
+  });
+
+  test('the worker only warns on a short APP_KEY in development', () async {
+    Queue.extend('empty', _Factory());
+    Env().env['APP_ENV'] = 'development';
+    addTearDown(() => Env().env.remove('APP_ENV'));
+    AppConfig app = AppConfig(
+      appKey: 'short',
+      totalIsolate: 1,
+      providers: <DoxProvider>[QueueProvider(QueueConfig(driver: 'empty'))],
+    );
+    expect(
+      await QueueWorker(app: app).run(<String>['work', '--stop-when-empty']),
+      0,
+    );
   });
 
   test('inProcess with the database driver but no dox_queue_database '
