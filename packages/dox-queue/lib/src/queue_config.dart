@@ -252,7 +252,8 @@ class QueueConfig {
   static int _number(String name, String value) {
     int? number = int.tryParse(value);
     if (number == null) {
-      throw ArgumentError.value(value, name, 'is not a number');
+      // the value can be a secret, so only the key is named
+      throw ArgumentError('$name must be a number');
     }
     return number;
   }
