@@ -1,3 +1,8 @@
+## Unreleased
+
+- Fix: a bad `REDIS_URL` no longer puts the Redis password in the error. Before, a bad port or a wrong scheme gave an error with the full URL, so the password went to the logs. Now the error shows the URL with the user and password hidden.
+- Fix: the queue worker (`QueueWorker`, `bin/queue.dart work`) now checks `APP_KEY` at start, like the web server does. A short or public sample key stops the worker in production and only logs a warning in development, local and test.
+
 ## 3.2.0
 
 - New `dox queue:install [--driver=database|redis|sync]`, run by `dox add queue`. It writes `lib/config/queue.dart`, the provider, `bin/queue.dart` and a sample job, adds the `REDIS_*` keys for `redis`, and for `database` adds dox_queue_database and the `create_queue_tables` migration. It never overwrites a file. dox_queue now depends on `dox_annotation`.

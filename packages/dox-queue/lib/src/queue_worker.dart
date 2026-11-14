@@ -128,6 +128,8 @@ Flags of work:
   Future<int> _run(QueueCommand command) async {
     switch (command.name) {
       case 'work':
+        // same check as the web server: a short or public key is easy to guess
+        Dox().checkAppKey();
         return _work(command.options, command.connection);
       case 'failed':
         _printFailed(await Queue.driverOf(command.connection).failed());
