@@ -1,4 +1,4 @@
-## Unreleased
+## 3.2.1
 
 - Fix: a bad `REDIS_PORT` no longer puts its value in the error. Before, the error showed the value, which can be a secret. Now the error is the fixed text `REDIS_PORT must be a number`.
 - Fix: the wrong-scheme error of a bad `REDIS_URL` no longer shows any part of the URL. Before, it showed the text before the first `:`. For a URL with no scheme, that text can be a user name or a secret token. Now the error is the fixed text `REDIS_URL must start with redis:// or rediss://`.
