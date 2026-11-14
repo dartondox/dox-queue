@@ -56,6 +56,18 @@ void main() {
       expect(options.secure, isFalse);
     });
 
+    test('a bad REDIS_PORT error names the key, not the value', () {
+      Object? error;
+      try {
+        QueueConfig.redisFromEnv(<String, String>{'REDIS_PORT': 'SECRETport'});
+      } catch (e) {
+        error = e;
+      }
+      expect(error, isA<ArgumentError>());
+      expect(error.toString(), contains('REDIS_PORT must be a number'));
+      expect(error.toString(), isNot(contains('SECRETport')));
+    });
+
     test('bad values throw a clear error', () {
       expect(
         () => QueueConfig.redisFromEnv(<String, String>{'REDIS_PORT': 'x'}),
