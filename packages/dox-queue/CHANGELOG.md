@@ -1,5 +1,6 @@
 ## Unreleased
 
+- Fix: an idle worker used a little more memory every few seconds, and it never gave it back. Each sleep of an idle loop (every 3 seconds) left one listener on a shared future that only ends at `stop()`. That is about 8 MB a day for each loop, and the in-process worker in the web server had it too. Now each sleep has its own completer, and it is removed when the sleep ends. `stop()` still wakes a sleeping loop at once.
 - Change: every queue log line now starts with the tag `[queue]` in place of the text `Queue: `. This is only the log text. The API is the same.
 
 ## 3.2.1
