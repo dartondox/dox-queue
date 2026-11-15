@@ -91,9 +91,14 @@ class QueueTables {
   /// rows it finds with this index, and `FOR UPDATE` then locks all of
   /// them, so the other workers skip every free job. The index of
   /// `queue` keeps the rows in id order, so the pop locks one row.
+  ///
+  /// It does nothing when the table has the index already, so it is safe
+  /// to call on a table made by [up].
   static Future<void> popIndex(Schema schema) async {
     if (schema.driver.getName() == Driver.mysql) return;
-    await schema.table(DatabaseQueueDriver.jobsTable, _addPopIndex);
+    String table = DatabaseQueueDriver.jobsTable;
+    if (await schema.hasIndex(table, popIndexColumns)) return;
+    await schema.table(table, _addPopIndex);
   }
 
   static void _addPopIndex(Table table) => table.index(popIndexColumns);

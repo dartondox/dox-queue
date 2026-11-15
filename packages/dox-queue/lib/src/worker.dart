@@ -138,6 +138,9 @@ class Worker {
   /// loop sleeps.
   int get debugOpenSleeps => _sleeping.length;
 
+  /// a done Future, for an event with no listener
+  static final Future<void> _noEvent = Future<void>.value();
+
   /// how many jobs this worker ran, for [WorkerOptions.maxJobs]
   int _done = 0;
 
@@ -495,7 +498,7 @@ class Worker {
     StackTrace? stack,
     Duration? delay,
   }) {
-    if (!QueueEvent.hasListeners(type)) return QueueEvent.none;
+    if (!QueueEvent.hasListeners(type)) return _noEvent;
     JobPayload payload = reserved.payload;
     return QueueEvent(
       type,

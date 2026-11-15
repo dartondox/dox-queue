@@ -103,6 +103,28 @@ void main() {
               : <String>{'queue', QueueTables.popIndexColumns.join(',')},
         );
       });
+
+      test('popIndex is safe to call again', () async {
+        await QueueTables.up(schema);
+        await QueueTables.popIndex(schema);
+        await QueueTables.popIndex(schema);
+        expect(
+          await _indexes(schema.driver),
+          mysql
+              ? <String>{'queue'}
+              : <String>{QueueTables.popIndexColumns.join(',')},
+        );
+        await schema.dropIfExists('jobs');
+        await schema.create('jobs', _oldJobs);
+        await QueueTables.popIndex(schema);
+        await QueueTables.popIndex(schema);
+        expect(
+          await _indexes(schema.driver),
+          mysql
+              ? <String>{'queue'}
+              : <String>{'queue', QueueTables.popIndexColumns.join(',')},
+        );
+      });
     }, skip: store.skip);
   }
 }

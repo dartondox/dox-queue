@@ -166,28 +166,35 @@ class DatabaseQueueDriver extends QueueDriver
     };
     Driver driver = db.getName();
     if (driver == Driver.mysql) return _popMysql(db, queues, values);
-    String where;
-    String order;
+    String lock = driver == Driver.postgres ? ' FOR UPDATE SKIP LOCKED' : '';
+    String pick;
     if (queues.length == 1) {
       values['queue'] = queues.first;
-      where = _free('queue = @queue');
-      order = 'id';
+      pick = _oldest('queue', lock);
     } else {
-      where = _free('queue IN (${_queueList(queues, values)})');
-      StringBuffer rank = StringBuffer('CASE queue');
+      // One sub-select per queue, first queue first. COALESCE stops at
+      // the first one with a job, so no poll sorts the jobs of all
+      // queues, and each sub-select can stop at its first free row.
+      StringBuffer each = StringBuffer();
       for (int i = 0; i < queues.length; i++) {
-        rank.write(' WHEN @queue$i THEN $i');
+        values['queue$i'] = queues[i];
+        if (i > 0) each.write(', ');
+        each.write('(${_oldest('queue$i', lock)})');
       }
-      order = '$rank END, id';
+      pick = 'COALESCE($each)';
     }
-    String lock = driver == Driver.postgres ? ' FOR UPDATE SKIP LOCKED' : '';
     List<Map<String, dynamic>> rows = await db.query(
       'UPDATE $jobsTable SET reserved_at = @now, attempts = attempts + 1 '
-      'WHERE id = (SELECT id FROM $jobsTable WHERE $where ORDER BY $order '
-      'LIMIT 1$lock) RETURNING id, payload, attempts',
+      'WHERE id = ($pick) RETURNING id, payload, attempts',
       substitutionValues: values,
     );
     return rows.isEmpty ? null : _reserved(rows.first);
+  }
+
+  /// the id of the oldest free job of the queue in the value [name]
+  static String _oldest(String name, String lock) {
+    return 'SELECT id FROM $jobsTable WHERE ${_free('queue = @$name')} '
+        'ORDER BY id LIMIT 1$lock';
   }
 
   /// `@queue0, @queue1, ...` for [queues], with their values in [values]
@@ -200,7 +207,9 @@ class DatabaseQueueDriver extends QueueDriver
     return names.toString();
   }
 
-  /// true after a MySQL pop found no job, see [_popMysql]
+  /// True after a MySQL pop found no job, see [_popMysql]. All loops of
+  /// the worker share it. It only picks if a cheap check runs first, so a
+  /// wrong value costs one round trip, never a missed or double job.
   bool _wasEmpty = false;
 
   /// MySQL and MariaDB have no `UPDATE ... RETURNING`, so a pop is a

@@ -240,12 +240,14 @@ void main() {
         skip: store.isRedis ? 'the database driver only' : null,
       );
 
-      test('pop still works after Redis lost its scripts', () async {
+      test('pop still works when Redis does not know the script', () async {
         RedisQueueDriver redis = driver as RedisQueueDriver;
         await driver.push(_payload('a'));
         await driver.push(_payload('b'));
         expect((await driver.pop('default'))!.payload.id, 'a');
-        await redis.redis.sendCommand(<String>['SCRIPT', 'FLUSH']);
+        // a SHA1 that Redis does not have, like after a restart. Nothing
+        // on the server changes, so a shared Redis is safe.
+        redis.debugPopSha = '0' * 40;
         // EVALSHA gives NOSCRIPT: the driver sends the script again
         expect((await driver.pop('default'))!.payload.id, 'b');
         await driver.push(_payload('c'));

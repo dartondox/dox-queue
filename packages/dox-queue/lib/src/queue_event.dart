@@ -118,9 +118,6 @@ class QueueEvent {
     return _listeners[type]?.isNotEmpty ?? false;
   }
 
-  /// a done Future, for an event with no listener
-  static final Future<void> none = Future<void>.value();
-
   /// Call the listeners of this event, in the order they were added. A
   /// listener that throws is logged, the next one still runs.
   Future<void> fire() async {

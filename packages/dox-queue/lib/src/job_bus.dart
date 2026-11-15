@@ -538,7 +538,8 @@ class Batch {
   final DateTime? finishedAt;
 
   /// queue, connection, allowFailures and the callback jobs, as the
-  /// store saves them
+  /// store saves them. Do not change the values inside it (eg. the map
+  /// of a callback job): a store may share them between reads.
   final Map<String, Object?> options;
 
   /// the batch of `Queue.fake()`, or null

@@ -118,8 +118,8 @@ return 1''';
 
   /// Run [_popScript] by its SHA1 (EVALSHA), so the script text is not
   /// sent on every pop. The first call loads it. When Redis lost it (a
-  /// restart or `SCRIPT FLUSH`), EVAL sends the text once more, and
-  /// Redis keeps it again.
+  /// restart or `SCRIPT FLUSH`), EVAL sends the text once more, and the
+  /// next pop loads it again.
   Future<Object?> _runPop(int keys, List<Object> args) async {
     String sha = _popSha ??=
         '${await redis.script('LOAD', <Object>[_popScript])}';
@@ -127,9 +127,15 @@ return 1''';
       return await redis.evalsha(sha, keys, args);
     } on RedisError catch (error) {
       if (!error.message.startsWith('NOSCRIPT')) rethrow;
+      // load it again on the next pop
+      _popSha = null;
       return redis.eval(_popScript, keys, args);
     }
   }
+
+  /// Only for tests: set the SHA1 the next pop uses, eg. a wrong one, to
+  /// test the EVAL fallback with no change to the Redis server.
+  set debugPopSha(String sha) => _popSha = sha;
 
   @override
   Future<void> delete(ReservedJob job) async {

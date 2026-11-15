@@ -190,7 +190,8 @@ class DatabaseBatchRepository implements BatchRepository {
   /// The decoded [text]. The options of a batch never change, and each
   /// done job of a batch reads them again. So the last one is kept: the
   /// next job of the same batch needs no JSON decode. Each batch gets its
-  /// own copy of the map.
+  /// own copy of the map, but the values inside it (the maps of the
+  /// callback jobs) are shared: do not change them.
   static Map<String, Object?> _options(String text) {
     if (text != _lastText) {
       _lastOptions = jsonDecode(text) as Map<String, Object?>;
