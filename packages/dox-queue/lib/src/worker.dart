@@ -139,7 +139,7 @@ class Worker {
   }
 
   void _timeIsUp() {
-    QueueLog.info('Queue: max time ${options.maxTime} reached, stopping');
+    QueueLog.info('max time ${options.maxTime} reached, stopping');
     stop();
   }
 
@@ -167,7 +167,7 @@ class Worker {
       try {
         job = await _nextOrStop();
       } catch (error, stack) {
-        QueueLog.danger('Queue: can not take a job: $error', '$stack');
+        QueueLog.danger('can not take a job: $error', '$stack');
         await _pause(options.sleep);
         continue;
       }
@@ -180,7 +180,7 @@ class Worker {
       try {
         await process(job);
       } catch (error, stack) {
-        QueueLog.danger('Queue: ${job.payload.job} error: $error', '$stack');
+        QueueLog.danger('${job.payload.job} error: $error', '$stack');
       }
       if (options.once) return;
       _checkLimits();
@@ -192,12 +192,12 @@ class Worker {
     _done++;
     int? maxJobs = options.maxJobs;
     if (maxJobs != null && _done >= maxJobs && !_stopping) {
-      QueueLog.info('Queue: ran $_done jobs (max $maxJobs), stopping');
+      QueueLog.info('ran $_done jobs (max $maxJobs), stopping');
       stop();
     }
     int? memory = options.memory;
     if (memory != null && ProcessInfo.currentRss > memory * 1024 * 1024) {
-      QueueLog.info('Queue: memory is over $memory MB, stopping');
+      QueueLog.info('memory is over $memory MB, stopping');
       stop();
     }
   }
@@ -273,7 +273,7 @@ class Worker {
       job = _decode(payload);
     } catch (error, stack) {
       // no retry: the job can not be read, a retry gives the same error
-      QueueLog.danger('Queue: failed $label: $error');
+      QueueLog.danger('failed $label: $error');
       await driver.fail(reserved, '$error\n$stack');
       await _freeUnique(payload);
       await JobBus.failed(payload, jobs, error);
@@ -305,7 +305,7 @@ class Worker {
     }
     Duration timeout = job.timeout ?? options.timeout;
     Stopwatch watch = Stopwatch()..start();
-    QueueLog.info('Queue: running $label');
+    QueueLog.info('running $label');
     Future<void>? run;
     JobRun jobRun = JobRun(reserved.attempts);
     try {
@@ -317,9 +317,7 @@ class Worker {
       // call wins, also over its own TimeoutException. When the worker
       // timeout fired, the call is dropped: the timeout rules count.
       if (jobRun.ended && jobRun.action != null) {
-        QueueLog.warn(
-          'Queue: $label threw after ${jobRun.action!.name}(): $error',
-        );
+        QueueLog.warn('$label threw after ${jobRun.action!.name}(): $error');
         await _apply(jobRun, reserved, job, label);
         return;
       }
@@ -336,7 +334,7 @@ class Worker {
       return;
     }
     if (await _finish(reserved, job, label)) {
-      QueueLog.success('Queue: done $label in ${watch.elapsedMilliseconds}ms');
+      QueueLog.success('done $label in ${watch.elapsedMilliseconds}ms');
     }
   }
 
@@ -369,7 +367,7 @@ class Worker {
     Duration wait = backoffFor(job, reserved.attempts, options.backoff);
     String of = payload.retryUntil == null ? ' of $tries' : '';
     QueueLog.warn(
-      'Queue: $label failed try ${reserved.attempts}$of, '
+      '$label failed try ${reserved.attempts}$of, '
       'next try in $wait: $reason',
     );
     await _event(
@@ -460,7 +458,7 @@ class Worker {
   ) async {
     switch (jobRun.action!) {
       case JobAction.release:
-        QueueLog.info('Queue: $label released, next try in ${jobRun.delay}');
+        QueueLog.info('$label released, next try in ${jobRun.delay}');
         await driver.release(reserved, jobRun.delay);
         await _event(
           QueueEventType.released,
@@ -470,7 +468,7 @@ class Worker {
         );
       case JobAction.delete:
         if (await _finish(reserved, job, label)) {
-          QueueLog.info('Queue: $label deleted by the job');
+          QueueLog.info('$label deleted by the job');
         }
       case JobAction.fail:
         await _fail(reserved, job, label, jobRun.error!, jobRun.stack!);
@@ -488,7 +486,7 @@ class Worker {
         .timeout(grace, onTimeout: _stillRunning);
     if (!ended) {
       QueueLog.warn(
-        'Queue: $label still runs $grace after its timeout. '
+        '$label still runs $grace after its timeout. '
         'The next try may run at the same time.',
       );
     }
@@ -538,16 +536,13 @@ class Worker {
     Object error,
     StackTrace stack,
   ) async {
-    QueueLog.danger('Queue: failed $label: $error');
+    QueueLog.danger('failed $label: $error');
     await driver.fail(reserved, '$error\n$stack');
     await _releaseUnique(reserved, job);
     try {
       await job.failed(error, stack);
     } catch (hookError, hookStack) {
-      QueueLog.danger(
-        'Queue: failed() of $label threw: $hookError',
-        '$hookStack',
-      );
+      QueueLog.danger('failed() of $label threw: $hookError', '$hookStack');
     }
     await JobBus.failed(reserved.payload, jobs, error);
     await _event(

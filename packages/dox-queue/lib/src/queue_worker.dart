@@ -117,7 +117,7 @@ Flags of work:
       }
       return await _run(command);
     } catch (error) {
-      stderr.writeln('Queue: $error');
+      stderr.writeln('[queue] $error');
       return 1;
     } finally {
       await _shutdown(providers);
@@ -198,7 +198,7 @@ Flags of work:
     /// the first signal stops gracefully. Then stop watching: the next
     /// signal does the default, it ends the process.
     void onSignal(ProcessSignal signal) {
-      Logger.info('Queue: $signal, stopping after the running jobs');
+      Logger.info('$signal, stopping after the running jobs', null, 'queue');
       for (StreamSubscription<ProcessSignal> s in signals) {
         s.cancel();
       }
@@ -212,7 +212,11 @@ Flags of work:
       restartedAt = await Cache().get(restartKey);
     } catch (error) {
       canRestart = false;
-      Logger.warn('Queue: no `restart`, the cache can not be read: $error');
+      Logger.warn(
+        'no `restart`, the cache can not be read: $error',
+        null,
+        'queue',
+      );
     }
     bool checking = false;
     Future<void> checkRestart(Timer timer) async {
@@ -225,7 +229,7 @@ Flags of work:
       } finally {
         checking = false;
       }
-      Logger.info('Queue: restart, stopping after the running jobs');
+      Logger.info('restart, stopping after the running jobs', null, 'queue');
       timer.cancel();
       worker.stop();
     }
@@ -239,16 +243,18 @@ Flags of work:
       signals.add(ProcessSignal.sigterm.watch().listen(onSignal));
     }
     Logger.info(
-      'Queue: worker started on ${options.queues.join(', ')} '
-      '(${connection == null ? '' : '$connection, '}$driverName, '
-      'concurrency ${options.concurrency})',
+      'worker started on ${options.queues.join(', ')} '
+          '(${connection == null ? '' : '$connection, '}$driverName, '
+          'concurrency ${options.concurrency})',
+      null,
+      'queue',
     );
     await worker.run();
     restart?.cancel();
     for (StreamSubscription<ProcessSignal> s in signals) {
       await s.cancel();
     }
-    Logger.info('Queue: worker stopped');
+    Logger.info('worker stopped', null, 'queue');
     return 0;
   }
 
@@ -301,7 +307,7 @@ Flags of work:
       try {
         await provider.shutdown();
       } catch (error) {
-        stderr.writeln('Queue: shutdown of ${provider.runtimeType}: $error');
+        stderr.writeln('[queue] shutdown of ${provider.runtimeType}: $error');
       }
     }
     await Queue.close();

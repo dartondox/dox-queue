@@ -1,3 +1,7 @@
+## Unreleased
+
+- Change: every queue log line now starts with the tag `[queue]` in place of the text `Queue: `. This is only the log text. The API is the same.
+
 ## 3.2.1
 
 - Fix: a bad `REDIS_PORT` no longer puts its value in the error. Before, the error showed the value, which can be a secret. Now the error is the fixed text `REDIS_PORT must be a number`.

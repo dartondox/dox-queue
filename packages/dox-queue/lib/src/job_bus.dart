@@ -194,7 +194,7 @@ class JobBus {
       await Batch._record(batch, jobs, step, error: error);
     } catch (error, stack) {
       QueueLog.danger(
-        'Queue: can not count ${payload.job} ${payload.id} in its batch '
+        'can not count ${payload.job} ${payload.id} in its batch '
             '$batch: $error',
         '$stack',
       );
@@ -218,7 +218,7 @@ class JobBus {
       // the class is gone or the data can not be read: a retry gives the
       // same error, so the chain stops here
       QueueLog.danger(
-        'Queue: can not read ${item['job']}, the next job of a chain: '
+        'can not read ${item['job']}, the next job of a chain: '
         '$error',
       );
       await _chainStopped(payload, onError, jobs, error);
