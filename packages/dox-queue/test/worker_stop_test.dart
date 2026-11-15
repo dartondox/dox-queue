@@ -212,4 +212,35 @@ void main() {
     worker.stop();
     worker.stop();
   });
+
+  test(
+    'idle sleeps leave no waker behind, stop() wakes a long sleep',
+    () async {
+      _EmptyDriver driver = _EmptyDriver(Duration.zero);
+      Worker worker = Worker(
+        driver: driver,
+        jobs: jobRegistry,
+        options: const WorkerOptions(sleep: Duration(milliseconds: 1)),
+      );
+      Future<void> running = worker.run();
+      await _until(() => driver.pops >= 50);
+      // many sleeps are over, and each one removed its completer
+      expect(worker.debugOpenSleeps, lessThanOrEqualTo(1));
+      worker.stop();
+      await running.timeout(const Duration(seconds: 3));
+      expect(worker.debugOpenSleeps, 0);
+
+      Worker sleepy = Worker(
+        driver: _EmptyDriver(Duration.zero),
+        jobs: jobRegistry,
+        options: const WorkerOptions(sleep: Duration(seconds: 30)),
+      );
+      Future<void> sleeping = sleepy.run();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(sleepy.debugOpenSleeps, 1);
+      sleepy.stop();
+      await sleeping.timeout(const Duration(seconds: 2));
+      expect(sleepy.debugOpenSleeps, 0);
+    },
+  );
 }

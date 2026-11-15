@@ -113,8 +113,13 @@ class Worker {
   /// ends the wait for the running pops, started by the first [stop]
   Timer? _graceTimer;
 
-  /// completes on [stop], to end a sleep early
-  final Completer<void> _wake = Completer<void>();
+  /// the sleeps that run now, one completer for each. [stop] completes
+  /// them, to end the sleep early. No listener stays on a shared future.
+  final Set<Completer<void>> _sleeping = <Completer<void>>{};
+
+  /// How many sleeps are open now. Only for tests: it must be 0 when no
+  /// loop sleeps.
+  int get debugOpenSleeps => _sleeping.length;
 
   /// how many jobs this worker ran, for [WorkerOptions.maxJobs]
   int _done = 0;
@@ -146,7 +151,9 @@ class Worker {
   /// Stop taking jobs. [run] ends when the running jobs are done.
   void stop() {
     _stopping = true;
-    if (!_wake.isCompleted) _wake.complete();
+    for (Completer<void> sleeping in _sleeping.toList()) {
+      if (!sleeping.isCompleted) sleeping.complete();
+    }
     if (!_runEnded) _graceTimer ??= Timer(popStopGrace, _giveUpWaiting);
   }
 
@@ -258,10 +265,18 @@ class Worker {
 
   /// sleep, but wake up on [stop]
   Future<void> _pause(Duration time) async {
+    if (_stopping) return;
     Completer<void> done = Completer<void>();
-    Timer timer = Timer(time, done.complete);
-    await Future.any(<Future<void>>[done.future, _wake.future]);
-    timer.cancel();
+    _sleeping.add(done);
+    Timer timer = Timer(time, () {
+      if (!done.isCompleted) done.complete();
+    });
+    try {
+      await done.future;
+    } finally {
+      timer.cancel();
+      _sleeping.remove(done);
+    }
   }
 
   /// Run one reserved job, then delete, release or fail it.
