@@ -276,7 +276,7 @@ class Queue {
       lock = Cache().lock(_uniqueKey(_nameOf(job), job), _uniqueFor(job), id);
       if (!await lock.get()) {
         QueueLog.info(
-          'Queue: skipped ${job.runtimeType}, a job with the same unique '
+          'skipped ${job.runtimeType}, a job with the same unique '
           'id is on the queue',
         );
         return false;
@@ -474,7 +474,7 @@ class Queue {
     try {
       return _itemJob(item, jobs);
     } catch (error) {
-      QueueLog.danger('Queue: can not read the job ${item['job']}: $error');
+      QueueLog.danger('can not read the job ${item['job']}: $error');
       return null;
     }
   }
@@ -494,7 +494,7 @@ class Queue {
     try {
       await _runNow(job);
     } catch (error, stack) {
-      QueueLog.danger('Queue: ${job.runtimeType} threw: $error', '$stack');
+      QueueLog.danger('${job.runtimeType} threw: $error', '$stack');
     }
   }
 
@@ -594,7 +594,7 @@ class Queue {
     String? middleware = run.releasedBy;
     if (run.action == JobAction.release && middleware != null) {
       QueueLog.warn(
-        'Queue: $middleware released ${job.runtimeType} outside a worker. '
+        '$middleware released ${job.runtimeType} outside a worker. '
         'There is no queue to put it back on, so the job did not run.',
       );
     }
@@ -662,7 +662,7 @@ class Queue {
       // only the error type: the error text can quote the job data, and
       // the data of a `ShouldBeEncrypted` job must stay secret
       QueueLog.warn(
-        'Queue: can not read retryUntil of ${payload.job} '
+        'can not read retryUntil of ${payload.job} '
         '(${payload.id}): ${error.runtimeType}',
       );
       return null;

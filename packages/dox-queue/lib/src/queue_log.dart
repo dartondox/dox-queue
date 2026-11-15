@@ -6,6 +6,7 @@ import 'package:dox_core/dox_core.dart';
 ///
 /// It uses the Dox `Logger` when `Dox().initialize()` ran. Without it,
 /// `Logger` crashes, so the line goes to stdout, or stderr for errors.
+/// Every line has the `queue` tag, like `[queue] message`.
 class QueueLog {
   static void info(String message) => _log('info', message);
 
@@ -19,10 +20,10 @@ class QueueLog {
 
   static void _log(String level, String message, [String? data]) {
     if (_doxReady()) {
-      Logger.log(level, message, data);
+      Logger.log(level, message, data, 'queue');
       return;
     }
-    String line = data == null ? message : '$message\n$data';
+    String line = '[queue] $message${data == null ? '' : '\n$data'}';
     if (level == 'danger') {
       stderr.writeln(line);
     } else {

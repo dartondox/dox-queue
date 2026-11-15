@@ -323,7 +323,7 @@ class DatabaseQueueDriver extends QueueDriver {
     } catch (error) {
       if (failedAtTimestamp) rethrow;
       QueueLog.warn(
-        'Queue: can not read the type of $failedTable.failed_at, it is '
+        'can not read the type of $failedTable.failed_at, it is '
         'read again next time: $error',
       );
       return;

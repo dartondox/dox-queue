@@ -11,7 +11,7 @@ Future<void> releaseUniqueLock(String name, String id) async {
     await Cache().lock(name, null, id).release();
   } catch (error, stack) {
     QueueLog.danger(
-      'Queue: can not free the unique lock $name of $id: $error',
+      'can not free the unique lock $name of $id: $error',
       '$stack',
     );
   }
@@ -28,7 +28,7 @@ Future<void> freeUniqueLockOf(String text) async {
     payload = JobPayload.decode(text);
   } catch (error) {
     // one broken job must not stop the clear of the others
-    QueueLog.warn('Queue: can not read a cleared job: $error');
+    QueueLog.warn('can not read a cleared job: $error');
     return;
   }
   String? name = payload.unique;

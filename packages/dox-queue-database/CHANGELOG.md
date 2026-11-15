@@ -1,3 +1,7 @@
+## Unreleased
+
+- Change: the log line of the database driver now starts with the tag `[queue]` in place of the text `Queue: `. This is only the log text. The API is the same.
+
 ## 3.2.1
 
 No changes.

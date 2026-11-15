@@ -121,10 +121,7 @@ class QueueEvent {
       try {
         await listener(this);
       } catch (error, stack) {
-        QueueLog.danger(
-          'Queue: a ${type.name} listener threw: $error',
-          '$stack',
-        );
+        QueueLog.danger('a ${type.name} listener threw: $error', '$stack');
       }
     }
   }
