@@ -329,6 +329,48 @@ void main() {
         expect(calls, <String>['before']);
       });
 
+      test('each batch reads its own options', () async {
+        Batch one = await batchOf(<DoxJob>[BatchStep('a')]).dispatch();
+        Batch two = await Queue.batch(<DoxJob>[BatchStep('b')])
+            .allowFailures()
+            .dispatch();
+        Batch first = (await Queue.findBatch(one.id))!;
+        expect(first.options['allowFailures'], isNull);
+        expect(first.options['then'], isNotNull);
+        // a change to one read does not reach the next read
+        first.options['allowFailures'] = true;
+        first = (await Queue.findBatch(one.id))!;
+        expect(first.options['allowFailures'], isNull);
+        Batch second = (await Queue.findBatch(two.id))!;
+        expect(second.options['allowFailures'], isTrue);
+        expect(second.options['then'], isNull);
+      });
+
+      test('pushes the jobs in order, a unique job in its place', () async {
+        List<String> queued = <String>[];
+        Queue.queued((QueueEvent event) => queued.add(event.name!));
+        Batch batch = await batchOf(<DoxJob>[
+          BatchStep('a'),
+          BatchStep('b'),
+          UniqueBatchStep(),
+          BatchStep('c'),
+          BatchStep('d'),
+        ]).dispatch();
+        expect(batch.totalJobs, 5);
+        expect(queued, <String>[
+          'BatchStep',
+          'BatchStep',
+          'UniqueBatchStep',
+          'BatchStep',
+          'BatchStep',
+        ]);
+        await work();
+        expect(JobLog.handled, <String>['a', 'b', 'unique', 'c', 'd']);
+        Batch? done = await Queue.findBatch(batch.id);
+        expect(done?.pendingJobs, 0);
+        expect(done?.finished, isTrue);
+      });
+
       test('a batch of only a skipped unique job ends at once', () async {
         await UniqueBatchStep().dispatch(delay: const Duration(minutes: 1));
         Batch batch = await batchOf(<DoxJob>[UniqueBatchStep()]).dispatch();

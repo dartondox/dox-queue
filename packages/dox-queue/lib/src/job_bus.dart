@@ -538,7 +538,8 @@ class Batch {
   final DateTime? finishedAt;
 
   /// queue, connection, allowFailures and the callback jobs, as the
-  /// store saves them
+  /// store saves them. Do not change the values inside it (eg. the map
+  /// of a callback job): a store may share them between reads.
   final Map<String, Object?> options;
 
   /// the batch of `Queue.fake()`, or null
@@ -661,27 +662,15 @@ class Batch {
   ) async {
     QueueConfig settings = Queue.config.connectionOf(connection);
     QueueDriver? driver = Queue._target(settings, connection);
+    if (driver != null) {
+      await _pushAll(id, units, payloads, driver, registry);
+      return;
+    }
     for (int i = 0; i < units.length; i++) {
       List<DoxJob> unit = units[i];
-      DoxJob job = unit.first;
       JobPayload payload = payloads[i];
       for (DoxJob each in unit) {
         _batchIds[each] = id;
-      }
-      if (driver != null) {
-        bool sent;
-        try {
-          sent = await Queue._send(job, payload.id, payload, driver, null);
-        } catch (_) {
-          // the jobs from here on are not pushed: take them out and
-          // cancel the batch, so it is finished and can be pruned
-          int left = units.length - i;
-          Batch? batch = await _change(id, total: -left, pending: -left);
-          await batch?.cancel();
-          rethrow;
-        }
-        if (!sent) await _record(id, registry, _BatchStep.skipped);
-        continue;
       }
       _BatchStep step = _BatchStep.done;
       Object? error;
@@ -719,6 +708,70 @@ class Batch {
         break;
       }
       await _record(id, registry, step, error: error);
+    }
+  }
+
+  /// [_push] to a real store. With a [BulkPush] driver the jobs that are
+  /// not [ShouldBeUnique] go in groups (multi-row inserts with the
+  /// `database` driver). A unique job needs its own lock, so it goes
+  /// alone, in its place, so the order stays the same.
+  static Future<void> _pushAll(
+    String id,
+    List<List<DoxJob>> units,
+    List<JobPayload> payloads,
+    QueueDriver driver,
+    JobRegistry registry,
+  ) async {
+    for (List<DoxJob> unit in units) {
+      for (DoxJob each in unit) {
+        _batchIds[each] = id;
+      }
+    }
+    BulkPush? bulk = switch (driver) {
+      BulkPush many => many,
+      _ => null,
+    };
+    int i = 0;
+    while (i < units.length) {
+      int end = i;
+      while (bulk != null &&
+          end < units.length &&
+          units[end].first is! ShouldBeUnique) {
+        end++;
+      }
+      bool sent;
+      try {
+        if (end - i > 1) {
+          await bulk!.pushAll(payloads.sublist(i, end));
+          for (int k = i; k < end; k++) {
+            await Queue._queued(
+              units[k].first,
+              payloads[k].id,
+              payloads[k],
+              null,
+            );
+          }
+          i = end;
+          continue;
+        }
+        JobPayload payload = payloads[i];
+        sent = await Queue._send(
+          units[i].first,
+          payload.id,
+          payload,
+          driver,
+          null,
+        );
+      } catch (_) {
+        // the jobs from here on are not pushed: take them out and
+        // cancel the batch, so it is finished and can be pruned
+        int left = units.length - i;
+        Batch? batch = await _change(id, total: -left, pending: -left);
+        await batch?.cancel();
+        rethrow;
+      }
+      if (!sent) await _record(id, registry, _BatchStep.skipped);
+      i++;
     }
   }
 
@@ -787,7 +840,9 @@ class Batch {
     Object? item,
     JobRegistry registry,
   ) async {
-    await QueueEvent(QueueEventType.batchProgress, batch: batch).fire();
+    if (QueueEvent.hasListeners(QueueEventType.batchProgress)) {
+      await QueueEvent(QueueEventType.batchProgress, batch: batch).fire();
+    }
     await _run(item, registry, batch.id);
   }
 

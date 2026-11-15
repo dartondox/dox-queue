@@ -17,7 +17,7 @@ import '../unique_lock.dart';
 /// the same job. When a worker crashes, its job stays in the reserved
 /// set. After [retryAfter] the next pop moves it back to the list.
 /// Failed jobs are in the hash `<prefix>failed`.
-class RedisQueueDriver extends QueueDriver {
+class RedisQueueDriver extends QueueDriver implements MultiQueuePop {
   RedisQueueDriver(
     this.redis, {
     this.prefix = 'dox_queue:',
@@ -28,9 +28,11 @@ class RedisQueueDriver extends QueueDriver {
   final String prefix;
   final Duration retryAfter;
 
-  /// Moves due delayed jobs and expired reservations to the list, then
-  /// takes the first job: adds 1 to its attempts and reserves it.
-  /// The data is a string inside the payload, so cjson keeps it as it is.
+  /// For each queue in turn (KEYS has 3 keys per queue: list, delayed,
+  /// reserved): moves due delayed jobs and expired reservations to the
+  /// list, then takes the first job: adds 1 to its attempts and reserves
+  /// it. Stops at the first queue with a job. The data is a string
+  /// inside the payload, so cjson keeps it as it is.
   static const String _popScript = '''
 local function migrate(from, to, now)
   local due = redis.call('ZRANGEBYSCORE', from, '-inf', now, 'LIMIT', 0, 100)
@@ -39,17 +41,23 @@ local function migrate(from, to, now)
     redis.call('RPUSH', to, due[i])
   end
 end
-migrate(KEYS[2], KEYS[1], ARGV[1])
-migrate(KEYS[3], KEYS[1], ARGV[1])
-local job = redis.call('LPOP', KEYS[1])
-if not job then
-  return false
+for q = 1, #KEYS, 3 do
+  migrate(KEYS[q + 1], KEYS[q], ARGV[1])
+  migrate(KEYS[q + 2], KEYS[q], ARGV[1])
+  local job = redis.call('LPOP', KEYS[q])
+  if job then
+    local decoded = cjson.decode(job)
+    decoded['attempts'] = (decoded['attempts'] or 0) + 1
+    local reserved = cjson.encode(decoded)
+    redis.call('ZADD', KEYS[q + 2], ARGV[2], reserved)
+    return reserved
+  end
 end
-local decoded = cjson.decode(job)
-decoded['attempts'] = (decoded['attempts'] or 0) + 1
-local reserved = cjson.encode(decoded)
-redis.call('ZADD', KEYS[3], ARGV[2], reserved)
-return reserved''';
+return false''';
+
+  /// the SHA1 of [_popScript] in the Redis script cache, after the first
+  /// pop loaded it
+  String? _popSha;
 
   /// Moves a reserved job to the delayed set, as the new text ARGV[3]
   /// (it can have a new exception count). Only when it is still reserved:
@@ -85,20 +93,49 @@ return 1''';
   }
 
   @override
-  Future<ReservedJob?> pop(String queue) async {
+  Future<ReservedJob?> pop(String queue) => popAny(<String>[queue]);
+
+  /// One script call for all [queues], first queue first.
+  @override
+  Future<ReservedJob?> popAny(List<String> queues) async {
+    if (queues.isEmpty) return null;
     int now = QueueDriver.now();
-    Object? reply = await redis.eval(_popScript, 3, <Object>[
-      _list(queue),
-      _delayed(queue),
-      _reserved(queue),
+    List<Object> args = <Object>[
+      for (String queue in queues) ...<String>[
+        _list(queue),
+        _delayed(queue),
+        _reserved(queue),
+      ],
       now,
       now + retryAfter.inMilliseconds,
-    ]);
+    ];
+    Object? reply = await _runPop(queues.length * 3, args);
     if (reply == null) return null;
     String text = reply.toString();
     JobPayload payload = JobPayload.decode(text);
     return ReservedJob(payload, attempts: payload.attempts, ref: text);
   }
+
+  /// Run [_popScript] by its SHA1 (EVALSHA), so the script text is not
+  /// sent on every pop. The first call loads it. When Redis lost it (a
+  /// restart or `SCRIPT FLUSH`), EVAL sends the text once more, and the
+  /// next pop loads it again.
+  Future<Object?> _runPop(int keys, List<Object> args) async {
+    String sha = _popSha ??=
+        '${await redis.script('LOAD', <Object>[_popScript])}';
+    try {
+      return await redis.evalsha(sha, keys, args);
+    } on RedisError catch (error) {
+      if (!error.message.startsWith('NOSCRIPT')) rethrow;
+      // load it again on the next pop
+      _popSha = null;
+      return redis.eval(_popScript, keys, args);
+    }
+  }
+
+  /// Only for tests: set the SHA1 the next pop uses, eg. a wrong one, to
+  /// test the EVAL fallback with no change to the Redis server.
+  set debugPopSha(String sha) => _popSha = sha;
 
   @override
   Future<void> delete(ReservedJob job) async {

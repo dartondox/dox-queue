@@ -179,8 +179,25 @@ class DatabaseBatchRepository implements BatchRepository {
       createdAt: _time(row['created_at'])!,
       cancelledAt: _time(row['cancelled_at']),
       finishedAt: _time(row['finished_at']),
-      options: jsonDecode(_text(row['options'])) as Map<String, Object?>,
+      options: _options(_text(row['options'])),
     );
+  }
+
+  /// the options text of the last batch read, and its decoded map
+  static String? _lastText;
+  static Map<String, Object?> _lastOptions = const <String, Object?>{};
+
+  /// The decoded [text]. The options of a batch never change, and each
+  /// done job of a batch reads them again. So the last one is kept: the
+  /// next job of the same batch needs no JSON decode. Each batch gets its
+  /// own copy of the map, but the values inside it (the maps of the
+  /// callback jobs) are shared: do not change them.
+  static Map<String, Object?> _options(String text) {
+    if (text != _lastText) {
+      _lastOptions = jsonDecode(text) as Map<String, Object?>;
+      _lastText = text;
+    }
+    return Map<String, Object?>.of(_lastOptions);
   }
 
   /// unix time in milliseconds

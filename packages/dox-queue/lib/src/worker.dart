@@ -26,6 +26,7 @@ class WorkerOptions {
     this.maxJobs,
     this.maxTime,
     this.memory,
+    this.maxSleep,
   });
 
   /// the queues to work, first one first (`--queue=high,default`)
@@ -76,6 +77,12 @@ class WorkerOptions {
   /// stop after a job when the process uses more than this many MB of
   /// memory (`--memory=256`). Null: no limit.
   final int? memory;
+
+  /// Opt-in (`--max-sleep=SECONDS`). Each empty poll in a row doubles the
+  /// wait, from [sleep] up to this time. A job resets it to [sleep]. So
+  /// an idle worker asks the store less often, but a new job can wait up
+  /// to this long. Null (the default): always wait [sleep].
+  final Duration? maxSleep;
 }
 
 /// Takes jobs from the queue and runs them. A job that throws is tried
@@ -87,6 +94,7 @@ class Worker {
     required this.jobs,
     this.options = const WorkerOptions(),
     this.popStopGrace = defaultPopStopGrace,
+    this.retryAfter,
   });
 
   /// How long a pop that is already running may take after [stop]. If it
@@ -101,6 +109,15 @@ class Worker {
 
   /// the grace of [defaultPopStopGrace], set here to make tests fast
   final Duration popStopGrace;
+
+  /// The `retryAfter` of the driver (`QueueConfig.retryAfter`). The
+  /// worker warns once when a job may run longer than it: then a second
+  /// worker can take the same job while the first one still runs it.
+  /// Null: no warning.
+  final Duration? retryAfter;
+
+  /// the job names that got the [retryAfter] warning
+  final Set<String> _warned = <String>{};
 
   bool _stopping = false;
 
@@ -121,6 +138,9 @@ class Worker {
   /// loop sleeps.
   int get debugOpenSleeps => _sleeping.length;
 
+  /// a done Future, for an event with no listener
+  static final Future<void> _noEvent = Future<void>.value();
+
   /// how many jobs this worker ran, for [WorkerOptions.maxJobs]
   int _done = 0;
 
@@ -128,6 +148,7 @@ class Worker {
   /// `stopWhenEmpty`, or after one job with `once`, or until a limit of
   /// `maxJobs`, `maxTime` or `memory` is hit.
   Future<void> run() async {
+    _warnRetryAfter(options.timeout, 'the worker timeout');
     int loops = options.once ? 1 : options.concurrency;
     Duration? maxTime = options.maxTime;
     Timer? timer = maxTime == null ? null : Timer(maxTime, _timeIsUp);
@@ -140,7 +161,25 @@ class Worker {
       timer?.cancel();
       _graceTimer?.cancel();
     }
-    await const QueueEvent(QueueEventType.stopping).fire();
+    if (QueueEvent.hasListeners(QueueEventType.stopping)) {
+      await const QueueEvent(QueueEventType.stopping).fire();
+    }
+  }
+
+  /// Warn once for [what] when a job with [timeout] can still run when
+  /// its reservation ends. Then a second worker takes the same job.
+  void _warnRetryAfter(Duration timeout, String what) {
+    Duration? limit = retryAfter;
+    if (limit == null) return;
+    Duration? grace = options.timeoutGrace;
+    Duration longest = timeout + (grace ?? Duration.zero);
+    if (longest < limit || !_warned.add(what)) return;
+    String plus = grace == null ? '' : ' with timeoutGrace';
+    QueueLog.warn(
+      '$what is $longest$plus, but retryAfter is $limit. '
+      'A job that runs this long is taken by a second worker while it '
+      'still runs. Make retryAfter bigger than the longest job.',
+    );
   }
 
   void _timeIsUp() {
@@ -167,8 +206,11 @@ class Worker {
   }
 
   Future<void> _loop() async {
+    Duration idle = options.sleep;
     while (!_stopping) {
-      await const QueueEvent(QueueEventType.looping).fire();
+      if (QueueEvent.hasListeners(QueueEventType.looping)) {
+        await const QueueEvent(QueueEventType.looping).fire();
+      }
       if (_stopping) return;
       ReservedJob? job;
       try {
@@ -181,9 +223,11 @@ class Worker {
       if (job == null) {
         if (_stopping) return;
         if (options.stopWhenEmpty || options.once) return;
-        await _pause(options.sleep);
+        await _pause(idle);
+        idle = _nextSleep(idle);
         continue;
       }
+      idle = options.sleep;
       try {
         await process(job);
       } catch (error, stack) {
@@ -192,6 +236,15 @@ class Worker {
       if (options.once) return;
       _checkLimits();
     }
+  }
+
+  /// the wait after [idle] when the queues are still empty: twice as
+  /// long, up to [WorkerOptions.maxSleep]
+  Duration _nextSleep(Duration idle) {
+    Duration? max = options.maxSleep;
+    if (max == null || idle >= max) return idle;
+    Duration next = idle * 2;
+    return next > max ? max : next;
   }
 
   /// stop on [WorkerOptions.maxJobs] or [WorkerOptions.memory]
@@ -254,7 +307,13 @@ class Worker {
     }
   }
 
+  /// the next job of the queues, first queue first. A [MultiQueuePop]
+  /// driver asks for all of them in one call (one round trip).
   Future<ReservedJob?> _next() async {
+    if (driver case MultiQueuePop many) {
+      if (_stopping) return null;
+      return many.popAny(options.queues);
+    }
     for (String queue in options.queues) {
       if (_stopping) return null;
       ReservedJob? job = await driver.pop(queue);
@@ -319,6 +378,7 @@ class Worker {
       return;
     }
     Duration timeout = job.timeout ?? options.timeout;
+    if (job.timeout != null) _warnRetryAfter(timeout, payload.job);
     Stopwatch watch = Stopwatch()..start();
     QueueLog.info('running $label');
     Future<void>? run;
@@ -428,7 +488,8 @@ class Worker {
     return true;
   }
 
-  /// fire a queue event of [reserved]
+  /// fire a queue event of [reserved]. With no listener it builds
+  /// nothing.
   Future<void> _event(
     QueueEventType type,
     ReservedJob reserved,
@@ -437,6 +498,7 @@ class Worker {
     StackTrace? stack,
     Duration? delay,
   }) {
+    if (!QueueEvent.hasListeners(type)) return _noEvent;
     JobPayload payload = reserved.payload;
     return QueueEvent(
       type,

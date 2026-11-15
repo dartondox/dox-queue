@@ -302,6 +302,18 @@ class Queue {
       await lock?.release();
       rethrow;
     }
+    await _queued(job, id, payload, delay);
+    return true;
+  }
+
+  /// fire [QueueEventType.queued] for [job], when it has a listener
+  static Future<void> _queued(
+    DoxJob job,
+    String id,
+    JobPayload payload,
+    Duration? delay,
+  ) async {
+    if (!QueueEvent.hasListeners(QueueEventType.queued)) return;
     await QueueEvent(
       QueueEventType.queued,
       job: job,
@@ -310,7 +322,6 @@ class Queue {
       queue: payload.queue,
       delay: delay ?? Duration.zero,
     ).fire();
-    return true;
   }
 
   /// Listen to [QueueEventType.queued]: `dispatch()` pushed a job. Not

@@ -62,9 +62,12 @@ class JobPayload {
   /// counted as failed.
   final bool batchFailed;
 
+  /// one secure random source for all ids: making one per id is slow
+  static final Random _random = Random.secure();
+
   /// a new random id: 16 random bytes as hex
   static String newId() {
-    Random random = Random.secure();
+    Random random = _random;
     StringBuffer out = StringBuffer();
     for (int i = 0; i < 16; i++) {
       out.write(random.nextInt(256).toRadixString(16).padLeft(2, '0'));
@@ -258,4 +261,22 @@ abstract class QueueDriver {
   static int now() {
     return DateTime.now().millisecondsSinceEpoch;
   }
+}
+
+/// Opt-in for a [QueueDriver]: take a job of several queues in one call.
+/// The worker uses it when the driver has it, else it calls `pop()` for
+/// each queue. The built-in drivers have it (one round trip).
+abstract interface class MultiQueuePop {
+  /// Take the next job of the first queue in [queues] that has one, or
+  /// null when all are empty.
+  Future<ReservedJob?> popAny(List<String> queues);
+}
+
+/// Opt-in for a [QueueDriver]: add many jobs at once. `Queue.batch()`
+/// uses it when the driver has it, else it calls `push()` for each job.
+/// The `database` driver has it (multi-row inserts).
+abstract interface class BulkPush {
+  /// Add all [payloads] with no delay, in this order, all or none: when
+  /// it throws, none of them may be on the queue.
+  Future<void> pushAll(List<JobPayload> payloads);
 }

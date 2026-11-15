@@ -1,12 +1,29 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:dox_core/dox_core.dart' show AppConfig, Dox, LoggerConfig;
 import 'package:dox_queue/dox_queue.dart';
 import 'package:test/test.dart';
 
 import 'fixtures/jobs.g.dart';
 import 'fixtures/test_jobs.dart';
 import 'support.dart';
+
+/// the log of [body], with the logger on
+Future<String> _logged(Future<void> Function() body) async {
+  Dox().initialize(
+    AppConfig(
+      appKey: 'k' * 32,
+      totalIsolate: 1,
+      logger: LoggerConfig(enabled: true),
+    ),
+  );
+  try {
+    return await logOf(body);
+  } finally {
+    Dox().initialize(AppConfig(appKey: 'k' * 32, totalIsolate: 1));
+  }
+}
 
 Future<void> _wait(int millis) {
   return Future<void>.delayed(Duration(milliseconds: millis));
@@ -45,6 +62,45 @@ void main() {
           ),
         ).run();
       }
+
+      test('warns once when a job may outlive retryAfter', () async {
+        // retryAfter is 500 ms here
+        await SlowJob(key: 'a', millis: 1, timeoutMillis: 600).dispatch();
+        await SlowJob(key: 'b', millis: 1, timeoutMillis: 600).dispatch();
+        String log = await _logged(() async {
+          await Worker(
+            driver: Queue.driver,
+            jobs: jobRegistry,
+            options: const WorkerOptions(
+              queues: <String>['slow'],
+              stopWhenEmpty: true,
+            ),
+            retryAfter: const Duration(milliseconds: 500),
+          ).run();
+        });
+        expect(JobLog.handled, <String>['slow a', 'slow b']);
+        expect('but retryAfter is'.allMatches(log), hasLength(2));
+        expect('the worker timeout is 0:01:00'.allMatches(log), hasLength(1));
+        expect('SlowJob is 0:00:00.600000'.allMatches(log), hasLength(1));
+      });
+
+      test('no retryAfter warning when the jobs end in time', () async {
+        await SlowJob(key: 'a', millis: 1, timeoutMillis: 100).dispatch();
+        String log = await _logged(() async {
+          await Worker(
+            driver: Queue.driver,
+            jobs: jobRegistry,
+            options: const WorkerOptions(
+              queues: <String>['slow'],
+              stopWhenEmpty: true,
+              timeout: Duration(milliseconds: 200),
+            ),
+            retryAfter: const Duration(milliseconds: 500),
+          ).run();
+        });
+        expect(JobLog.handled, <String>['slow a']);
+        expect(log, isNot(contains('retryAfter')));
+      });
 
       test('runs a job and deletes it', () async {
         String id = await SendWelcomeEmail(userId: 7).dispatch();

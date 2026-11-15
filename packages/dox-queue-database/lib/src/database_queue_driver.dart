@@ -7,17 +7,21 @@ import 'package:dox_queue/dox_queue.dart';
 /// table (see `QueueTables`), through the dox_orm connection.
 ///
 /// A worker takes a job like this:
-/// - Postgres, MySQL 8+ and MariaDB 10.6+: `SELECT ... FOR UPDATE SKIP
-///   LOCKED` and an update, in one transaction. Workers do not wait on
-///   each other.
-/// - SQLite: one `UPDATE ... RETURNING` statement. SQLite runs one write
-///   at a time, so two workers never get the same job.
+/// - Postgres and SQLite: one `UPDATE ... RETURNING` statement. On
+///   Postgres its inner `SELECT ... FOR UPDATE SKIP LOCKED` lets workers
+///   pass each other with no wait. SQLite runs one write at a time, so
+///   two workers never get the same job.
+/// - MySQL 8+ and MariaDB 10.6+ (no `UPDATE ... RETURNING`): `SELECT ...
+///   FOR UPDATE SKIP LOCKED` and an update, in one transaction.
+/// A worker with several queues asks for all of them in one statement,
+/// first queue first.
 ///
 /// The worker sets `reserved_at`. When it crashes, the job is free again
 /// after [retryAfter]. Times are unix time in milliseconds, but
 /// `failed_jobs.failed_at` is a UTC timestamp when [failedAtTimestamp] is
 /// true.
-class DatabaseQueueDriver extends QueueDriver {
+class DatabaseQueueDriver extends QueueDriver
+    implements MultiQueuePop, BulkPush {
   DatabaseQueueDriver({
     this.connection,
     this.retryAfter = const Duration(seconds: 90),
@@ -53,11 +57,25 @@ class DatabaseQueueDriver extends QueueDriver {
   static const String jobsTable = 'jobs';
   static const String failedTable = 'failed_jobs';
 
-  /// a job is free when it is due and not reserved, or when its
-  /// reservation is older than [retryAfter]
-  static const String _free =
-      'queue = @queue AND ((reserved_at IS NULL AND available_at <= @now) '
-      'OR reserved_at <= @expired)';
+  /// A job is free when it is due and not reserved, or when its
+  /// reservation is older than [retryAfter]. [queue] is the queue test.
+  /// Each side of the OR fits the index (queue, reserved_at,
+  /// available_at) of `QueueTables`.
+  static String _free(String queue) {
+    return '$queue AND ((reserved_at IS NULL AND available_at <= @now) '
+        'OR reserved_at <= @expired)';
+  }
+
+  /// most rows of one multi-row insert of [pushAll]: 2 bind values per
+  /// row stay far below the limit of every database (SQLite: 32766, or
+  /// 999 in old builds)
+  static const int _rowsPerInsert = 400;
+
+  /// a new insert starts when the payloads of one are this big, to stay
+  /// below the packet size of MySQL and MariaDB (16 MB and more).
+  /// The size is counted at the worst case: 3 bytes for each UTF-16 unit
+  /// of the text. So the real size is never more than this.
+  static const int _bytesPerInsert = 1 << 20;
 
   DBDriver get _db => SqlQueryBuilder().getDBDriver(connection);
 
@@ -80,36 +98,171 @@ class DatabaseQueueDriver extends QueueDriver {
     );
   }
 
+  /// Add all [payloads] with a few multi-row inserts, in one
+  /// transaction when it needs more than one insert.
   @override
-  Future<ReservedJob?> pop(String queue) async {
+  Future<void> pushAll(List<JobPayload> payloads) async {
+    if (payloads.isEmpty) return;
+    DBDriver db = _db;
+    int now = QueueDriver.now();
+    List<List<(String, String)>> parts = <List<(String, String)>>[];
+    List<(String, String)> part = <(String, String)>[];
+    int bytes = 0;
+    for (JobPayload payload in payloads) {
+      if (part.length == _rowsPerInsert || bytes > _bytesPerInsert) {
+        parts.add(part);
+        part = <(String, String)>[];
+        bytes = 0;
+      }
+      String text = payload.encode();
+      part.add((payload.queue, text));
+      bytes += text.length * 3;
+    }
+    parts.add(part);
+    Future<void> insertAll() async {
+      for (List<(String, String)> rows in parts) {
+        await _insert(db, rows, now);
+      }
+    }
+
+    if (parts.length == 1) {
+      await insertAll();
+    } else {
+      await db.transaction(insertAll);
+    }
+  }
+
+  /// one multi-row insert of [rows]: (queue, payload text)
+  Future<void> _insert(
+    DBDriver db,
+    List<(String, String)> rows,
+    int now,
+  ) async {
+    Map<String, dynamic> values = <String, dynamic>{'now': now};
+    StringBuffer sql = StringBuffer(
+      'INSERT INTO $jobsTable (queue, payload, attempts, reserved_at, '
+      'available_at, created_at) VALUES ',
+    );
+    for (int i = 0; i < rows.length; i++) {
+      if (i > 0) sql.write(', ');
+      sql.write('(@q$i, @p$i, 0, NULL, @now, @now)');
+      values['q$i'] = rows[i].$1;
+      values['p$i'] = rows[i].$2;
+    }
+    await db.execute(sql.toString(), substitutionValues: values);
+  }
+
+  @override
+  Future<ReservedJob?> pop(String queue) => popAny(<String>[queue]);
+
+  /// One statement for all [queues]: the first queue with a free job
+  /// wins, then the oldest job of it. On MySQL see [_popMysql].
+  ///
+  /// On Postgres: when every free job of the first queue is locked by
+  /// another worker at that moment, the worker takes a job from the next
+  /// queue. This is the same as before.
+  @override
+  Future<ReservedJob?> popAny(List<String> queues) async {
+    if (queues.isEmpty) return null;
     DBDriver db = _db;
     int now = QueueDriver.now();
     Map<String, dynamic> values = <String, dynamic>{
-      'queue': queue,
       'now': now,
       'expired': now - retryAfter.inMilliseconds,
     };
-    if (db.getName() == Driver.sqlite) {
-      List<Map<String, dynamic>> rows = await db.query(
-        'UPDATE $jobsTable SET reserved_at = @now, attempts = attempts + 1 '
-        'WHERE id = (SELECT id FROM $jobsTable WHERE $_free ORDER BY id '
-        'LIMIT 1) RETURNING id, payload, attempts',
-        substitutionValues: values,
-      );
-      return rows.isEmpty ? null : _reserved(rows.first);
+    Driver driver = db.getName();
+    if (driver == Driver.mysql) return _popMysql(db, queues, values);
+    String lock = driver == Driver.postgres ? ' FOR UPDATE SKIP LOCKED' : '';
+    String pick;
+    if (queues.length == 1) {
+      values['queue'] = queues.first;
+      pick = _oldest('queue', lock);
+    } else {
+      // One sub-select per queue, first queue first. COALESCE stops at
+      // the first one with a job, so no poll sorts the jobs of all
+      // queues, and each sub-select can stop at its first free row.
+      StringBuffer each = StringBuffer();
+      for (int i = 0; i < queues.length; i++) {
+        values['queue$i'] = queues[i];
+        if (i > 0) each.write(', ');
+        each.write('(${_oldest('queue$i', lock)})');
+      }
+      pick = 'COALESCE($each)';
     }
-    return db.transaction(() {
-      return _popLocked(db, values);
-    });
+    List<Map<String, dynamic>> rows = await db.query(
+      'UPDATE $jobsTable SET reserved_at = @now, attempts = attempts + 1 '
+      'WHERE id = ($pick) RETURNING id, payload, attempts',
+      substitutionValues: values,
+    );
+    return rows.isEmpty ? null : _reserved(rows.first);
   }
 
+  /// the id of the oldest free job of the queue in the value [name]
+  static String _oldest(String name, String lock) {
+    return 'SELECT id FROM $jobsTable WHERE ${_free('queue = @$name')} '
+        'ORDER BY id LIMIT 1$lock';
+  }
+
+  /// `@queue0, @queue1, ...` for [queues], with their values in [values]
+  static String _queueList(List<String> queues, Map<String, dynamic> values) {
+    StringBuffer names = StringBuffer();
+    for (int i = 0; i < queues.length; i++) {
+      values['queue$i'] = queues[i];
+      names.write(i == 0 ? '@queue$i' : ', @queue$i');
+    }
+    return names.toString();
+  }
+
+  /// True after a MySQL pop found no job, see [_popMysql]. All loops of
+  /// the worker share it. It only picks if a cheap check runs first, so a
+  /// wrong value costs one round trip, never a missed or double job.
+  bool _wasEmpty = false;
+
+  /// MySQL and MariaDB have no `UPDATE ... RETURNING`, so a pop is a
+  /// transaction for each queue, first queue first. One `ORDER BY` for
+  /// all queues would sort the rows, and `FOR UPDATE` would then lock
+  /// every free job. So when the last pop found nothing, one plain read
+  /// with no lock checks all queues first: an idle worker makes one round
+  /// trip, not three for each queue.
+  Future<ReservedJob?> _popMysql(
+    DBDriver db,
+    List<String> queues,
+    Map<String, dynamic> values,
+  ) async {
+    if (_wasEmpty) {
+      Map<String, dynamic> any = <String, dynamic>{...values};
+      List<Map<String, dynamic>> rows = await db.query(
+        'SELECT id FROM $jobsTable WHERE '
+        '${_free('queue IN (${_queueList(queues, any)})')} LIMIT 1',
+        substitutionValues: any,
+      );
+      if (rows.isEmpty) return null;
+    }
+    String where = _free('queue = @queue');
+    for (String queue in queues) {
+      values['queue'] = queue;
+      ReservedJob? job = await db.transaction(() {
+        return _popLocked(db, where, 'id', values);
+      });
+      if (job != null) {
+        _wasEmpty = false;
+        return job;
+      }
+    }
+    _wasEmpty = true;
+    return null;
+  }
+
+  /// MySQL and MariaDB: lock the row, then reserve it
   Future<ReservedJob?> _popLocked(
     DBDriver db,
+    String where,
+    String order,
     Map<String, dynamic> values,
   ) async {
     List<Map<String, dynamic>> rows = await db.query(
-      'SELECT id, payload, attempts FROM $jobsTable WHERE $_free '
-      'ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED',
+      'SELECT id, payload, attempts FROM $jobsTable WHERE $where '
+      'ORDER BY $order LIMIT 1 FOR UPDATE SKIP LOCKED',
       substitutionValues: values,
     );
     if (rows.isEmpty) return null;

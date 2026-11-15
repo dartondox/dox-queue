@@ -62,11 +62,11 @@ Without `register()`, `QueueConfig(driver: 'database')` throws an
 
 ## The tables
 
-- `jobs`: the queued jobs. Postgres, MySQL and MariaDB workers take a job
-  with `SELECT ... FOR UPDATE SKIP LOCKED`, so many workers do not wait on
-  each other. A SQLite worker takes a job with one `UPDATE ... RETURNING`.
-  SQLite runs one write at a time, so this is safe. It is good for small
-  apps.
+- `jobs`: the queued jobs. Workers use `SELECT ... FOR UPDATE SKIP LOCKED`
+  on Postgres, MySQL and MariaDB, so many workers do not wait on each
+  other. Postgres and SQLite take a job with one `UPDATE ... RETURNING`
+  statement. MySQL and MariaDB use a short transaction. SQLite runs one
+  write at a time, so it is safe there too. It is good for small apps.
 - `failed_jobs`: the jobs that failed for good.
 - `job_batches`: the batches of `Queue.batch()`. Only batches need it.
 
@@ -86,6 +86,36 @@ Use another connection of `config/database.dart` with
 `QueueConfig(connection: 'postgres')`. Two `database` queue connections on
 the same dox_orm connection share the `jobs` and `failed_jobs` tables, so
 give each one its own dox_orm connection.
+
+### The index of the jobs table
+
+On SQLite and Postgres a new `jobs` table has an index on `(queue,
+reserved_at, available_at)`. A worker finds the next job with it, so many
+delayed jobs do not slow down each poll. A table made before this index
+works too. To add the index, write a new migration:
+
+```dart
+class AddQueuePopIndex extends Migration {
+  @override
+  Future<void> up(Schema schema) async {
+    await QueueTables.popIndex(schema);
+  }
+
+  @override
+  Future<void> down(Schema schema) async {
+    // popIndex adds no index on MySQL and MariaDB
+    if (schema.driver.getName() == Driver.mysql) return;
+    await schema.table('jobs', (Table table) {
+      table.dropIndex(QueueTables.popIndexColumns);
+    });
+  }
+}
+```
+
+On MySQL and MariaDB the table keeps the index on `queue` only, and
+`popIndex` does nothing. With the other index the pop must sort the rows
+it finds, and `FOR UPDATE` then locks all of them. The other workers would
+skip every free job.
 
 ## Batches
 

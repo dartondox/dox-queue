@@ -112,6 +112,12 @@ class QueueEvent {
   /// remove every listener
   static void forgetListeners() => _listeners.clear();
 
+  /// True when [type] has a listener. Check it before you build an
+  /// event, so no object and no Future is made for nobody.
+  static bool hasListeners(QueueEventType type) {
+    return _listeners[type]?.isNotEmpty ?? false;
+  }
+
   /// Call the listeners of this event, in the order they were added. A
   /// listener that throws is logged, the next one still runs.
   Future<void> fire() async {

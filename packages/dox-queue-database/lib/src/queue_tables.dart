@@ -34,7 +34,10 @@ class QueueTables {
     Schema schema, {
     bool failedAtTimestamp = false,
   }) async {
-    await schema.create(DatabaseQueueDriver.jobsTable, _jobs);
+    await schema.create(
+      DatabaseQueueDriver.jobsTable,
+      schema.driver.getName() == Driver.mysql ? _jobsMysql : _jobs,
+    );
     // NEXT MAJOR: make this the default, then remove the flag.
     await schema.create(
       DatabaseQueueDriver.failedTable,
@@ -70,10 +73,52 @@ class QueueTables {
     table.bigInteger('finished_at').nullable().index();
   }
 
-  /// times are unix time in milliseconds
+  /// The columns of [popIndex]. A worker finds the next job with them.
+  static const List<String> popIndexColumns = <String>[
+    'queue',
+    'reserved_at',
+    'available_at',
+  ];
+
+  /// Add the index of [popIndexColumns] to the `jobs` table, on SQLite
+  /// and Postgres. New tables of [up] have it. A table made before it
+  /// works too, but with many delayed jobs each poll reads them all. Add
+  /// it in a new migration:
+  /// ```
+  /// await QueueTables.popIndex(schema);
+  /// ```
+  /// On MySQL and MariaDB it does nothing: there the pop must sort the
+  /// rows it finds with this index, and `FOR UPDATE` then locks all of
+  /// them, so the other workers skip every free job. The index of
+  /// `queue` keeps the rows in id order, so the pop locks one row.
+  ///
+  /// It does nothing when the table has the index already, so it is safe
+  /// to call on a table made by [up].
+  static Future<void> popIndex(Schema schema) async {
+    if (schema.driver.getName() == Driver.mysql) return;
+    String table = DatabaseQueueDriver.jobsTable;
+    if (await schema.hasIndex(table, popIndexColumns)) return;
+    await schema.table(table, _addPopIndex);
+  }
+
+  static void _addPopIndex(Table table) => table.index(popIndexColumns);
+
+  /// SQLite and Postgres. Times are unix time in milliseconds. The index
+  /// starts with `queue`, so it also serves a search by queue alone.
   static void _jobs(Table table) {
+    _jobColumns(table);
+    _addPopIndex(table);
+  }
+
+  /// MySQL and MariaDB: an index of `queue` only, see [popIndex]
+  static void _jobsMysql(Table table) {
+    _jobColumns(table);
+    table.index('queue');
+  }
+
+  static void _jobColumns(Table table) {
     table.id();
-    table.string('queue').index();
+    table.string('queue');
     table.longText('payload');
     table.integer('attempts').defaultTo(0);
     table.bigInteger('reserved_at').nullable();

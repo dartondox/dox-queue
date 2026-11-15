@@ -19,7 +19,7 @@ import 'worker.dart';
 ///   `--concurrency=N`, `--once`, `--tries=N`, `--timeout=SECONDS`,
 ///   `--sleep=SECONDS`, `--stop-when-empty`, `--timeout-grace=SECONDS`,
 ///   `--backoff=SECONDS[,SECONDS...]`, `--max-jobs=N`,
-///   `--max-time=SECONDS`, `--memory=MB`.
+///   `--max-time=SECONDS`, `--memory=MB`, `--max-sleep=SECONDS`.
 ///
 /// Every command takes the opt-in flag `--connection=NAME`: use that
 /// queue connection of `QueueConfig.connections`. Default: the main one.
@@ -93,7 +93,9 @@ Flags of work:
                       (default: retry at once)
   --max-jobs=N        stop after N jobs (default: no limit)
   --max-time=SECONDS  stop after this time (default: no limit)
-  --memory=MB         stop when the process uses more memory (default: no limit)''';
+  --memory=MB         stop when the process uses more memory (default: no limit)
+  --max-sleep=SECONDS when the queues stay empty, double the sleep up to this
+                      (default: no doubling, always --sleep)''';
 
   /// Run the command of [args]. Returns the exit code: 0 for success.
   Future<int> run(List<String> args) async {
@@ -191,6 +193,7 @@ Flags of work:
       driver: Queue.driverOf(connection),
       jobs: Queue.config.jobs,
       options: options,
+      retryAfter: Queue.config.connectionOf(connection).retryAfter,
     );
     List<StreamSubscription<ProcessSignal>> signals =
         <StreamSubscription<ProcessSignal>>[];
@@ -400,6 +403,7 @@ class QueueCommand {
         maxJobs: _int(flags, 'max-jobs'),
         maxTime: _seconds(flags, 'max-time'),
         memory: _int(flags, 'memory'),
+        maxSleep: _seconds(flags, 'max-sleep'),
       ),
       hours: _int(flags, 'hours') ?? 24,
       connection: _connection(flags['connection']),
@@ -445,6 +449,7 @@ class QueueCommand {
     'max-jobs',
     'max-time',
     'memory',
+    'max-sleep',
     'hours',
     'connection',
     'unfinished',

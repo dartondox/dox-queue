@@ -57,6 +57,7 @@ class QueueProvider extends DoxProvider {
         concurrency: config.workerConcurrency,
         timeoutGrace: config.workerTimeoutGrace,
       ),
+      retryAfter: config.retryAfter,
     );
     _worker = worker;
     _running = worker.run();

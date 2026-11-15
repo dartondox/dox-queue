@@ -57,6 +57,7 @@ QueueConfig queueConfig = QueueConfig(
 !!! warning "Keep `retryAfter` bigger than your longest job"
     `retryAfter` is how Dox finds the job of a crashed worker.
     A job that runs longer than `retryAfter` looks crashed, so a second worker runs it again.
+    The worker warns once in its log when its `--timeout`, or the `timeout` of a job, is not below `retryAfter`.
 
 ### 2. Provider
 
