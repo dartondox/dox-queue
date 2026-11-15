@@ -240,6 +240,33 @@ void main() {
         skip: store.isRedis ? 'the database driver only' : null,
       );
 
+      test(
+        'pushAll keeps big non-ASCII payloads, in more than one insert',
+        () async {
+          // 20 jobs of 100000 Burmese letters: 300 KB each in UTF-8, so
+          // the 1 MB limit of one insert is passed many times
+          String text = 'က' * 100000;
+          List<JobPayload> jobs = <JobPayload>[
+            for (int i = 0; i < 20; i++)
+              JobPayload(
+                id: 'big$i',
+                job: 'SendWelcomeEmail',
+                queue: 'default',
+                data: '"$text"',
+              ),
+          ];
+          await (driver as BulkPush).pushAll(jobs);
+          for (int i = 0; i < 20; i++) {
+            ReservedJob job = (await driver.pop('default'))!;
+            expect(job.payload.id, 'big$i');
+            expect(job.payload.data, '"$text"');
+            await driver.delete(job);
+          }
+          expect(await driver.pop('default'), isNull);
+        },
+        skip: store.isRedis ? 'the database driver only' : null,
+      );
+
       test('pop still works when Redis does not know the script', () async {
         RedisQueueDriver redis = driver as RedisQueueDriver;
         await driver.push(_payload('a'));

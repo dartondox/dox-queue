@@ -72,7 +72,9 @@ class DatabaseQueueDriver extends QueueDriver
   static const int _rowsPerInsert = 400;
 
   /// a new insert starts when the payloads of one are this big, to stay
-  /// below the packet size of MySQL and MariaDB (16 MB and more)
+  /// below the packet size of MySQL and MariaDB (16 MB and more).
+  /// The size is counted at the worst case: 3 bytes for each UTF-16 unit
+  /// of the text. So the real size is never more than this.
   static const int _bytesPerInsert = 1 << 20;
 
   DBDriver get _db => SqlQueryBuilder().getDBDriver(connection);
@@ -114,7 +116,7 @@ class DatabaseQueueDriver extends QueueDriver
       }
       String text = payload.encode();
       part.add((payload.queue, text));
-      bytes += text.length;
+      bytes += text.length * 3;
     }
     parts.add(part);
     Future<void> insertAll() async {
@@ -155,6 +157,10 @@ class DatabaseQueueDriver extends QueueDriver
 
   /// One statement for all [queues]: the first queue with a free job
   /// wins, then the oldest job of it. On MySQL see [_popMysql].
+  ///
+  /// On Postgres: when every free job of the first queue is locked by
+  /// another worker at that moment, the worker takes a job from the next
+  /// queue. This is the same as before.
   @override
   Future<ReservedJob?> popAny(List<String> queues) async {
     if (queues.isEmpty) return null;
