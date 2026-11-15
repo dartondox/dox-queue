@@ -4,7 +4,11 @@ name: Release
 # to pub.dev, in dependency order. A package that is already on pub.dev
 # with this version is skipped, so a failed release can be run again. The
 # tag must match the root pubspec version and be on main.
-# Wait for CI to be green on main before you push the tag.
+# Wait for CI to be green on main before you push the tag. Then the tag
+# skips the tests: they already passed on this commit (ci-passed). If CI
+# did not pass on main, the tag runs the tests again, on pub.dev only.
+# pub-check always runs: main CI used the sibling clones, so it checks the
+# packages against what is really on pub.dev.
 
 on:
   push:
@@ -18,13 +22,54 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # All CI tests must pass on the tag before anything is published.
-  # On a tag they use pub.dev only.
+  # passed=true when CI passed on main for this same commit. Any API error
+  # or unclear answer gives false, so the tests run.
+  ci-passed:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      passed: ${{ steps.check.outputs.passed }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yaml/runs?event=push&branch=main&status=success&head_sha=$GITHUB_SHA" \
+            --jq '[.workflow_runs[] | select(.conclusion == "success" and .head_sha == env.GITHUB_SHA)] | length') || n=0
+          if [ "$n" -gt 0 ] 2>/dev/null; then passed=true; else passed=false; fi
+          echo "passed=$passed" | tee -a "$GITHUB_OUTPUT"
+
+  # The CI tests, when they did not pass on main yet. On a tag they use
+  # pub.dev only. `!cancelled()`: run even if ci-passed itself failed.
   test:
+    needs: ci-passed
+    if: ${{ !cancelled() && needs.ci-passed.outputs.passed != 'true' }}
     uses: ./.github/workflows/ci.yaml
 
+  # Short check against pub.dev only, on every tag. Read access only: it
+  # runs no upload, so it does not get the pub.dev token.
+  pub-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - run: ci/pub-get-retry.sh
+      - run: dart analyze --no-fatal-warnings packages
+
+  # A skipped test job is fine only when CI passed on main. A failed or
+  # cancelled test job stops the release.
   publish:
-    needs: test
+    needs: [ci-passed, test, pub-check]
+    if: >-
+      ${{ !cancelled()
+      && needs.pub-check.result == 'success'
+      && (needs.test.result == 'success'
+      || (needs.test.result == 'skipped' && needs.ci-passed.outputs.passed == 'true')) }}
     runs-on: ubuntu-latest
     environment: pub.dev
     permissions:
@@ -49,7 +94,7 @@ jobs:
       # the local packages, so this needs no wait for pub.dev. The uploads
       # then skip this check (--skip-validation), see ci/publish.sh.
       - name: Resolve the workspace
-        run: dart pub get
+        run: ci/pub-get-retry.sh
       - name: Check every package (dry run)
         run: ci/publish-dry-run.sh
       - name: Publish packages in order
