@@ -25,6 +25,10 @@ for entry in $entries; do
   rm -f "$work/pubspec_overrides.yaml" "$work/pubspec.lock"
   sed -i.bak '/^resolution:[[:space:]]*workspace/d' "$work/pubspec.yaml"
   rm -f "$work/pubspec.yaml.bak"
+  if grep -q '^dependency_overrides:' "$work/pubspec.yaml"; then
+    echo "::error::packages/$dir/pubspec.yaml already has dependency_overrides:. This script adds its own block, so remove it."
+    exit 1
+  fi
   # Path overrides, only for siblings released in this same run.
   overrides=""
   for other in $entries; do
