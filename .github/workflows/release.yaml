@@ -7,8 +7,9 @@ name: Release
 # Wait for CI to be green on main before you push the tag. Then the tag
 # skips the tests: they already passed on this commit (ci-passed). If CI
 # did not pass on main, the tag runs the tests again, on pub.dev only.
-# pub-check always runs: main CI used the sibling clones, so it checks the
-# packages against what is really on pub.dev.
+# pub-check always runs: main CI used the sibling clones, so it resolves
+# and analyzes each package in a copy outside the workspace, with every
+# dependency from pub.dev (ci/pub-check.sh).
 
 on:
   push:
@@ -47,8 +48,9 @@ jobs:
     if: ${{ !cancelled() && needs.ci-passed.outputs.passed != 'true' }}
     uses: ./.github/workflows/ci.yaml
 
-  # Short check against pub.dev only, on every tag. Read access only: it
-  # runs no upload, so it does not get the pub.dev token.
+  # Short check against pub.dev, on every tag. Packages of this repo that
+  # ship in the same tag use each other by path, all else is from pub.dev.
+  # Read access only: it runs no upload, so no pub.dev token.
   pub-check:
     runs-on: ubuntu-latest
     permissions:
@@ -58,8 +60,10 @@ jobs:
       - uses: dart-lang/setup-dart@v1
         with:
           sdk: stable
-      - run: ci/pub-get-retry.sh
-      - run: dart analyze --no-fatal-warnings packages
+      - name: Package order
+        run: ci/publish-order.sh
+      - name: Resolve and analyze against pub.dev
+        run: ci/pub-check.sh
 
   # A skipped test job is fine only when CI passed on main. A failed or
   # cancelled test job stops the release.
@@ -73,6 +77,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: pub.dev
     permissions:
+      contents: read
       id-token: write # pub.dev automated publishing (OIDC)
     steps:
       - uses: actions/checkout@v4
