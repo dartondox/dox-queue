@@ -82,6 +82,58 @@ void main() {
         expect(again.attempts, 2);
       });
 
+      test('popAny takes the first queue first, then the oldest job', () async {
+        MultiQueuePop many = driver as MultiQueuePop;
+        await driver.push(_payload('d1'));
+        await driver.push(_payload('h1', queue: 'high'));
+        await driver.push(_payload('d2'));
+        await driver.push(_payload('h2', queue: 'high'));
+        await driver.push(
+          _payload('h0', queue: 'high'),
+          delay: const Duration(seconds: 30),
+        );
+        List<String> order = <String>[];
+        for (int i = 0; i < 4; i++) {
+          ReservedJob job = (await many.popAny(<String>['high', 'default']))!;
+          expect(job.attempts, 1);
+          order.add(job.payload.id);
+        }
+        // the delayed job is not due yet
+        expect(order, <String>['h1', 'h2', 'd1', 'd2']);
+        expect(await many.popAny(<String>['high', 'default']), isNull);
+        expect(await many.popAny(<String>[]), isNull);
+      });
+
+      test('popAny gives back a job of a crashed worker', () async {
+        MultiQueuePop many = driver as MultiQueuePop;
+        await driver.push(_payload('a', queue: 'emails'));
+        ReservedJob first = (await many.popAny(<String>['x', 'emails']))!;
+        expect(first.attempts, 1);
+        expect(await many.popAny(<String>['x', 'emails']), isNull);
+        await _wait(500);
+        ReservedJob again = (await many.popAny(<String>['x', 'emails']))!;
+        expect(again.payload.id, 'a');
+        expect(again.attempts, 2);
+        await driver.delete(again);
+        expect(await driver.pop('emails'), isNull);
+      });
+
+      test('two workers never get the same job with popAny', () async {
+        MultiQueuePop many = driver as MultiQueuePop;
+        for (int i = 0; i < 20; i++) {
+          await driver.push(_payload('job$i', queue: i.isEven ? 'a' : 'b'));
+        }
+        List<ReservedJob?> taken = await Future.wait(<Future<ReservedJob?>>[
+          for (int i = 0; i < 25; i++) many.popAny(<String>['a', 'b']),
+        ]);
+        List<String> ids = <String>[
+          for (ReservedJob? job in taken)
+            if (job != null) job.payload.id,
+        ];
+        expect(ids.length, 20);
+        expect(ids.toSet().length, 20);
+      });
+
       test('two workers never get the same job', () async {
         for (int i = 0; i < 20; i++) {
           await driver.push(_payload('job$i'));
@@ -164,6 +216,41 @@ void main() {
         expect(again.payload.exceptions, 2);
         expect(again.attempts, 2);
       });
+
+      test(
+        'pushAll adds many jobs in order, in more than one insert',
+        () async {
+          // more than one insert of 400 rows: they run in a transaction
+          List<JobPayload> jobs = <JobPayload>[
+            for (int i = 0; i < 450; i++)
+              _payload('job$i', queue: i == 449 ? 'emails' : 'default'),
+          ];
+          await (driver as BulkPush).pushAll(jobs);
+          await (driver as BulkPush).pushAll(<JobPayload>[]);
+          for (int i = 0; i < 449; i++) {
+            ReservedJob job = (await driver.pop('default'))!;
+            expect(job.payload.id, 'job$i');
+            expect(job.attempts, 1);
+            // the reservation is short here: do not let it come back
+            await driver.delete(job);
+          }
+          expect(await driver.pop('default'), isNull);
+          expect((await driver.pop('emails'))!.payload.id, 'job449');
+        },
+        skip: store.isRedis ? 'the database driver only' : null,
+      );
+
+      test('pop still works after Redis lost its scripts', () async {
+        RedisQueueDriver redis = driver as RedisQueueDriver;
+        await driver.push(_payload('a'));
+        await driver.push(_payload('b'));
+        expect((await driver.pop('default'))!.payload.id, 'a');
+        await redis.redis.sendCommand(<String>['SCRIPT', 'FLUSH']);
+        // EVALSHA gives NOSCRIPT: the driver sends the script again
+        expect((await driver.pop('default'))!.payload.id, 'b');
+        await driver.push(_payload('c'));
+        expect((await driver.pop('default'))!.payload.id, 'c');
+      }, skip: store.isRedis ? null : 'the Redis driver only');
     }, skip: store.skip);
   }
 }

@@ -1,5 +1,12 @@
 ## Unreleased
 
+- New: the worker warns once in its log when a job may run longer than `retryAfter`. Then a second worker can take the same job while the first one still runs it. It checks the worker `--timeout` at start, and the `timeout` of each job class the first time it runs. `timeoutGrace` counts too. Nothing else changes. `Worker` has a new optional `retryAfter`; `bin/queue.dart` and the in-process worker pass `QueueConfig.retryAfter`.
+- New, opt-in: `--max-sleep=SECONDS` (`WorkerOptions.maxSleep`). When the queues stay empty, each empty poll doubles the sleep, up to this time. A job sets it back to `--sleep`. Off by default, so a new job never waits longer than before.
+- Faster: a worker with several queues (`--queue=high,default`) asks for all of them in one call. The Redis driver runs one script for all queues. It also sends the script by its SHA1 (`EVALSHA`), not the full text on every pop. When Redis lost the script (a restart or `SCRIPT FLUSH`), it sends the text once more. The order is the same: the first queue first.
+- New for driver authors: the opt-in interfaces `MultiQueuePop` (`popAny(queues)`) and `BulkPush` (`pushAll(payloads)`, all or none). A driver without them works as before: the worker calls `pop()` for each queue, and a batch calls `push()` for each job.
+- Faster: `Queue.batch()` adds its jobs with `BulkPush` when the driver has it (the `database` driver does). A `ShouldBeUnique` job still goes alone, in its place, so the order is the same.
+- Faster: a queue event with no listener builds no event object and no Future. New `QueueEvent.hasListeners(type)`.
+- Faster: `JobPayload.newId()` uses one secure random source, not a new one for each id.
 - Fix: an idle worker used a little more memory every few seconds, and it never gave it back. Each sleep of an idle loop (every 3 seconds) left one listener on a shared future that only ends at `stop()`. That is about 8 MB a day for each loop, and the in-process worker in the web server had it too. Now each sleep has its own completer, and it is removed when the sleep ends. `stop()` still wakes a sleeping loop at once.
 - Change: every queue log line now starts with the tag `[queue]` in place of the text `Queue: `. This is only the log text. The API is the same.
 

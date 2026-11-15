@@ -199,7 +199,7 @@ dart run bin/queue.dart work --once
 | `prune-failed` | delete failed jobs older than `--hours=N` (default 24) |
 | `prune-batches` | delete finished batches older than `--hours=N` (default 24) |
 
-Flags of `work`: `--queue=a,b` (first goes first), `--concurrency=N`, `--once`, `--tries=N`, `--timeout=SECONDS`, `--sleep=SECONDS`, `--stop-when-empty`, `--timeout-grace=SECONDS`, `--backoff=1,5,10`, `--max-jobs=N`, `--max-time=SECONDS`, `--memory=MB`. Every command takes `--connection=name`.
+Flags of `work`: `--queue=a,b` (first goes first), `--concurrency=N`, `--once`, `--tries=N`, `--timeout=SECONDS`, `--sleep=SECONDS`, `--stop-when-empty`, `--timeout-grace=SECONDS`, `--backoff=1,5,10`, `--max-jobs=N`, `--max-time=SECONDS`, `--memory=MB`, opt-in `--max-sleep=SECONDS` (double the idle sleep up to this). Every command takes `--connection=name`.
 
 Run the worker as its own process next to the web server.
 Ctrl+C or SIGTERM stops it after the running jobs. A second signal stops it at once.

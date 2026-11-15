@@ -384,6 +384,7 @@ void main() {
       '--max-jobs=10',
       '--max-time=60',
       '--memory=128',
+      '--max-sleep=30',
     ]);
     expect(command.name, 'work');
     WorkerOptions options = command.options;
@@ -402,6 +403,8 @@ void main() {
     expect(options.maxJobs, 10);
     expect(options.maxTime, const Duration(seconds: 60));
     expect(options.memory, 128);
+    expect(options.maxSleep, const Duration(seconds: 30));
+    expect(QueueCommand.parse(<String>[]).options.maxSleep, isNull);
     expect(QueueCommand.parse(<String>[]).options.timeoutGrace, isNull);
     expect(QueueCommand.parse(<String>[]).options.maxJobs, isNull);
     expect(QueueCommand.parse(<String>['prune-failed']).hours, 24);

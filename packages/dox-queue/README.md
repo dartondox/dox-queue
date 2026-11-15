@@ -61,6 +61,7 @@ QueueConfig queueConfig = QueueConfig(
 > **Keep `retryAfter` bigger than your longest job**
 > `retryAfter` is how Dox finds the job of a crashed worker.
 > A job that runs longer than `retryAfter` looks crashed, so a second worker runs it again.
+> The worker warns once in its log when its `--timeout`, or the `timeout` of a job, is not below `retryAfter`.
 
 ### 2. Provider
 
@@ -374,6 +375,7 @@ Flags of `work`:
 | `--max-jobs=1000` | off | stop after this many jobs |
 | `--max-time=3600` | off | stop after this many seconds |
 | `--memory=256` | off | stop when the process uses more than this many MB |
+| `--max-sleep=30` | off | opt-in: when the queues stay empty, double the sleep after each empty poll, up to this many seconds. A job sets it back to `--sleep`. An idle worker asks the store less often, but a new job can wait up to this long |
 
 With `--max-jobs`, `--max-time` and `--memory`, the worker stops after its running jobs. Let your process manager start it again.
 
@@ -1025,6 +1027,7 @@ await Worker(
 Use these to write your own queue store or driver:
 
 - `Queue.extend(name, factory)` adds a queue driver. The factory is a `QueueDriverFactory` with `create(QueueConfig config, {String? name})`.
+- Opt-in for a driver: implement `MultiQueuePop` (`popAny(queues)`) to take a job of several queues in one round trip, and `BulkPush` (`pushAll(payloads)`, all or none) to add the jobs of a batch at once. Without them the worker calls `pop()` for each queue, and a batch calls `push()` for each job.
 - `Queue.useBatches(BatchRepository? repository)` sets the batch store. Without one, `Queue.batch()` throws a `StateError`.
 - `Queue.useTransactions(QueueTransactions? transactions)` sets the `afterCommit` support. Without one, a dispatch with `afterCommit` on throws a `StateError`.
 - `JobRegistry.addBuiltIn(JobCodec codec)` adds a built-in job from a package (dox_mailer uses it).
