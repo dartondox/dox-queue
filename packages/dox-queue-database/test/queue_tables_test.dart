@@ -63,6 +63,14 @@ void _oldJobs(Table table) {
   table.bigInteger('created_at');
 }
 
+void _addPopOnly(Table table) => table.index(QueueTables.popIndexColumns);
+
+String _values(Map<String, dynamic> row) => row.values.join(' ');
+
+/// a sort step in a plan: `Sort` (Postgres), `Using filesort` (MySQL),
+/// `USE TEMP B-TREE FOR ORDER BY` (SQLite)
+final RegExp _sort = RegExp('sort|temp b-tree', caseSensitive: false);
+
 void main() {
   setUpAll(setUpTestApp);
 
@@ -83,47 +91,76 @@ void main() {
         await QueueTables.up(schema);
       });
 
-      test('a new table has the pop index', () async {
+      String pop = QueueTables.popIndexColumns.join(',');
+      String order = QueueTables.orderIndexColumns.join(',');
+      // the indexes of a new table on this store
+      Set<String> made = switch (store.name) {
+        'postgres' => <String>{pop, order},
+        'sqlite' => <String>{order},
+        _ => <String>{'queue'},
+      };
+
+      test('a new table has the pop indexes', () async {
         await QueueTables.up(schema);
-        expect(
-          await _indexes(schema.driver),
-          mysql
-              ? <String>{'queue'}
-              : <String>{QueueTables.popIndexColumns.join(',')},
-        );
+        expect(await _indexes(schema.driver), made);
       });
 
-      test('popIndex adds it to an old table', () async {
+      test('popIndex adds them to an old table', () async {
         await schema.create('jobs', _oldJobs);
         await QueueTables.popIndex(schema);
-        expect(
-          await _indexes(schema.driver),
-          mysql
-              ? <String>{'queue'}
-              : <String>{'queue', QueueTables.popIndexColumns.join(',')},
-        );
+        expect(await _indexes(schema.driver), <String>{'queue', ...made});
+      });
+
+      test('popIndex adds the order index to a table with the pop index '
+          'only', () async {
+        if (mysql) return;
+        await schema.create('jobs', _oldJobs);
+        await schema.table('jobs', _addPopOnly);
+        await QueueTables.popIndex(schema);
+        expect(await _indexes(schema.driver), <String>{'queue', pop, order});
       });
 
       test('popIndex is safe to call again', () async {
         await QueueTables.up(schema);
         await QueueTables.popIndex(schema);
         await QueueTables.popIndex(schema);
-        expect(
-          await _indexes(schema.driver),
-          mysql
-              ? <String>{'queue'}
-              : <String>{QueueTables.popIndexColumns.join(',')},
-        );
+        expect(await _indexes(schema.driver), made);
         await schema.dropIfExists('jobs');
         await schema.create('jobs', _oldJobs);
         await QueueTables.popIndex(schema);
         await QueueTables.popIndex(schema);
-        expect(
-          await _indexes(schema.driver),
-          mysql
-              ? <String>{'queue'}
-              : <String>{'queue', QueueTables.popIndexColumns.join(',')},
+        expect(await _indexes(schema.driver), <String>{'queue', ...made});
+      });
+
+      // A burst of jobs into a new table, with no statistics yet: the pop
+      // must walk the jobs in id order and stop at the first free one.
+      // A sort means it reads every free job, for each pop.
+      test('the pop sorts nothing after a burst into a new table', () async {
+        await QueueTables.up(schema);
+        DBDriver db = schema.driver;
+        String row = "('default', 'x', 0, 0)";
+        for (int i = 0; i < 5; i++) {
+          await db.execute(
+            'INSERT INTO jobs (queue, payload, available_at, created_at) '
+            'VALUES ${List<String>.filled(500, row).join(', ')}',
+          );
+        }
+        String explain = mysql || store.name == 'postgres'
+            ? 'EXPLAIN'
+            : 'EXPLAIN QUERY PLAN';
+        String lock = store.name == 'sqlite' ? '' : ' FOR UPDATE SKIP LOCKED';
+        List<Map<String, dynamic>> rows = await db.query(
+          '$explain SELECT id FROM jobs WHERE queue = @queue AND '
+          '((reserved_at IS NULL AND available_at <= @now) '
+          'OR reserved_at <= @expired) ORDER BY id LIMIT 1$lock',
+          substitutionValues: <String, dynamic>{
+            'queue': 'default',
+            'now': 1000,
+            'expired': 0,
+          },
         );
+        String plan = rows.map(_values).join(' ');
+        expect(plan, isNot(matches(_sort)));
       });
     }, skip: store.skip);
   }

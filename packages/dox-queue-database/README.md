@@ -87,12 +87,24 @@ Use another connection of `config/database.dart` with
 the same dox_orm connection share the `jobs` and `failed_jobs` tables, so
 give each one its own dox_orm connection.
 
-### The index of the jobs table
+### The indexes of the jobs table
 
-On SQLite and Postgres a new `jobs` table has an index on `(queue,
-reserved_at, available_at)`. A worker finds the next job with it, so many
-delayed jobs do not slow down each poll. A table made before this index
-works too. To add the index, write a new migration:
+A new `jobs` table has the indexes a worker needs to find the next job
+fast:
+
+- Postgres: `(queue, id, reserved_at, available_at)` and `(queue,
+  reserved_at, available_at)`.
+- SQLite: `(queue, id, reserved_at, available_at)`.
+- MySQL and MariaDB: `queue`.
+
+The first index keeps the jobs of a queue in id order, so a pop stops at
+the first free job. The second one helps Postgres when most jobs wait
+(delayed or reserved). Postgres picks between them with its statistics.
+
+A table made before works too, but on Postgres a burst of jobs into a new
+or mostly empty table can make each pop read and sort every free job, until
+Postgres runs `ANALYZE` on the table (about a minute). To add the indexes,
+write a new migration:
 
 ```dart
 class AddQueuePopIndex extends Migration {
@@ -103,19 +115,24 @@ class AddQueuePopIndex extends Migration {
 
   @override
   Future<void> down(Schema schema) async {
+    Driver driver = schema.driver.getName();
     // popIndex adds no index on MySQL and MariaDB
-    if (schema.driver.getName() == Driver.mysql) return;
+    if (driver == Driver.mysql) return;
     await schema.table('jobs', (Table table) {
-      table.dropIndex(QueueTables.popIndexColumns);
+      table.dropIndex(QueueTables.orderIndexColumns);
+      if (driver == Driver.postgres) {
+        table.dropIndex(QueueTables.popIndexColumns);
+      }
     });
   }
 }
 ```
 
-On MySQL and MariaDB the table keeps the index on `queue` only, and
-`popIndex` does nothing. With the other index the pop must sort the rows
-it finds, and `FOR UPDATE` then locks all of them. The other workers would
-skip every free job.
+`popIndex` adds only the indexes the table does not have, so it is safe to
+run on any table. On MySQL and MariaDB it does nothing: the index on
+`queue` keeps the rows in id order already. With the other index the pop
+must sort the rows it finds, and `FOR UPDATE` then locks all of them. The
+other workers would skip every free job.
 
 ## Batches
 
