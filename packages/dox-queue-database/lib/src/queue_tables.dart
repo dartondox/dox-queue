@@ -34,10 +34,12 @@ class QueueTables {
     Schema schema, {
     bool failedAtTimestamp = false,
   }) async {
-    await schema.create(
-      DatabaseQueueDriver.jobsTable,
-      schema.driver.getName() == Driver.mysql ? _jobsMysql : _jobs,
-    );
+    void Function(Table) jobs = switch (schema.driver.getName()) {
+      Driver.postgres => _jobsPostgres,
+      Driver.sqlite => _jobsSqlite,
+      Driver.mysql => _jobsMysql,
+    };
+    await schema.create(DatabaseQueueDriver.jobsTable, jobs);
     // NEXT MAJOR: make this the default, then remove the flag.
     await schema.create(
       DatabaseQueueDriver.failedTable,
@@ -73,41 +75,80 @@ class QueueTables {
     table.bigInteger('finished_at').nullable().index();
   }
 
-  /// The columns of [popIndex]. A worker finds the next job with them.
+  /// The columns of the pop index, on Postgres only. A worker finds the
+  /// next free job with it when most jobs wait (delayed or reserved).
+  /// Postgres picks it only when its statistics say so.
   static const List<String> popIndexColumns = <String>[
     'queue',
     'reserved_at',
     'available_at',
   ];
 
-  /// Add the index of [popIndexColumns] to the `jobs` table, on SQLite
-  /// and Postgres. New tables of [up] have it. A table made before it
-  /// works too, but with many delayed jobs each poll reads them all. Add
-  /// it in a new migration:
+  /// The columns of the order index, on Postgres and SQLite. It keeps the
+  /// jobs of a queue in id order, so a pop stops at the first free job
+  /// and sorts nothing. Without it, Postgres with old statistics (a new
+  /// table, or one that is often near empty) uses the pop index after a
+  /// burst of jobs: each pop then reads and sorts every free job, until
+  /// the next ANALYZE. SQLite never uses the pop index well, so it has
+  /// only this one. `reserved_at` and `available_at` let SQLite check a
+  /// row in the index, without reading the table.
+  static const List<String> orderIndexColumns = <String>[
+    'queue',
+    'id',
+    'reserved_at',
+    'available_at',
+  ];
+
+  /// Add the indexes a worker needs to the `jobs` table: on Postgres the
+  /// indexes of [popIndexColumns] and [orderIndexColumns], on SQLite the
+  /// index of [orderIndexColumns]. New tables of [up] have them. A table
+  /// made before works too, but a poll can read every waiting job. Add
+  /// them in a new migration:
   /// ```
   /// await QueueTables.popIndex(schema);
   /// ```
-  /// On MySQL and MariaDB it does nothing: there the pop must sort the
-  /// rows it finds with this index, and `FOR UPDATE` then locks all of
-  /// them, so the other workers skip every free job. The index of
-  /// `queue` keeps the rows in id order, so the pop locks one row.
+  /// On MySQL and MariaDB it does nothing: the index of `queue` keeps the
+  /// rows in id order already. A pop index would make the pop sort the
+  /// rows it finds, and `FOR UPDATE` would then lock all of them, so the
+  /// other workers would skip every free job.
   ///
-  /// It does nothing when the table has the index already, so it is safe
-  /// to call on a table made by [up].
+  /// It adds only the indexes the table does not have, so it is safe to
+  /// call on a table made by [up], or more than once.
   static Future<void> popIndex(Schema schema) async {
-    if (schema.driver.getName() == Driver.mysql) return;
     String table = DatabaseQueueDriver.jobsTable;
-    if (await schema.hasIndex(table, popIndexColumns)) return;
-    await schema.table(table, _addPopIndex);
+    List<List<String>> missing = <List<String>>[];
+    for (List<String> columns in _indexes(schema.driver.getName())) {
+      if (!await schema.hasIndex(table, columns)) missing.add(columns);
+    }
+    if (missing.isEmpty) return;
+    await schema.table(table, (Table jobs) {
+      for (List<String> columns in missing) {
+        jobs.index(columns);
+      }
+    });
   }
 
-  static void _addPopIndex(Table table) => table.index(popIndexColumns);
+  /// the indexes of a new `jobs` table on [driver], besides the primary key
+  static List<List<String>> _indexes(Driver driver) {
+    return switch (driver) {
+      Driver.postgres => <List<String>>[popIndexColumns, orderIndexColumns],
+      Driver.sqlite => <List<String>>[orderIndexColumns],
+      Driver.mysql => <List<String>>[],
+    };
+  }
 
-  /// SQLite and Postgres. Times are unix time in milliseconds. The index
-  /// starts with `queue`, so it also serves a search by queue alone.
-  static void _jobs(Table table) {
+  /// Times are unix time in milliseconds. Both indexes start with
+  /// `queue`, so they also serve a search by queue alone.
+  static void _jobsPostgres(Table table) {
     _jobColumns(table);
-    _addPopIndex(table);
+    table.index(popIndexColumns);
+    table.index(orderIndexColumns);
+  }
+
+  /// SQLite: the order index only, see [orderIndexColumns]
+  static void _jobsSqlite(Table table) {
+    _jobColumns(table);
+    table.index(orderIndexColumns);
   }
 
   /// MySQL and MariaDB: an index of `queue` only, see [popIndex]
