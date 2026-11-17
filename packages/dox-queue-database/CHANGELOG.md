@@ -1,4 +1,4 @@
-## Unreleased
+## 3.2.2
 
 - Faster: on Postgres a worker takes a job with one `UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED) RETURNING` statement. Before, it was a transaction with a select and an update (4 round trips). SQLite already used one statement. The job order, the attempts count and `reserved_at` are the same.
 - Faster: a worker with several queues asks for all of them in one statement on Postgres and SQLite, first queue first. Each queue has its own sub-select in a `COALESCE`, which stops at the first queue with a job. So a poll never sorts the jobs of all queues. On MySQL and MariaDB the pop stays one short transaction for each queue. After a pop that found nothing, one plain read with no lock checks all queues first, so an idle worker makes one round trip, not three for each queue.

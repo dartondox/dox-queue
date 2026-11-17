@@ -1,4 +1,4 @@
-## Unreleased
+## 3.2.2
 
 - New: the worker warns once in its log when a job may run longer than `retryAfter`. Then a second worker can take the same job while the first one still runs it. It checks the worker `--timeout` at start, and the `timeout` of each job class the first time it runs. `timeoutGrace` counts too. Nothing else changes. `Worker` has a new optional `retryAfter`; `bin/queue.dart` and the in-process worker pass `QueueConfig.retryAfter`.
 - New, opt-in: `--max-sleep=SECONDS` (`WorkerOptions.maxSleep`). When the queues stay empty, each empty poll doubles the sleep, up to this time. A job sets it back to `--sleep`. Off by default, so a new job never waits longer than before.
