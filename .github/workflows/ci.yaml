@@ -53,6 +53,7 @@ jobs:
         with:
           workspaces: |
             ../dox-http-native/native -> target
+            ../dox-http-native/packages/dox-http-native/native -> target
             ../dox-postgres-native/native -> target
             ../dox-mysql-native/native -> target
       # Builds the native libraries of the clones, for this machine only.

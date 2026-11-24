@@ -48,6 +48,8 @@ if [ "${1:-}" = build ]; then
   for entry in "${siblings[@]}"; do
     read -r repo _ <<< "$entry"
     manifest="$parent/$repo/native/Cargo.toml"
+    # a repo that keeps its packages in packages/ (a pub workspace)
+    [ -f "$manifest" ] || manifest="$parent/$repo/packages/$repo/native/Cargo.toml"
     [ -f "$manifest" ] || continue
     start=$SECONDS
     cargo build --release --manifest-path "$manifest"
@@ -75,6 +77,10 @@ for entry in "${siblings[@]}"; do
   fi
   for p in $packages; do
     path="$dir/${p#*:}"
+    # the repo moved its package into packages/<repo> (a pub workspace)
+    if [ "${p#*:}" = . ] && [ -f "$dir/packages/$repo/pubspec.yaml" ]; then
+      path="$dir/packages/$repo"
+    fi
     out+="
   ${p%%:*}:
     path: ${path%/.}"
